@@ -1,0 +1,12 @@
+# Build / Xcode (gerados — não versionar)
+build/
+DerivedData/
+*.xcarchive
+*.ipa
+*.xcodeproj/        # o projeto é gerado pelo XcodeGen a partir de project.yml
+
+# macOS
+.DS_Store
+
+# Ferramentas locais (não versionar)
+.claude/

@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Info.plist — PhotoVaultiCloudSync (versão BACKUP LOCAL, sem iCloud)
+
+  Chaves de aplicativo + as obrigatórias para:
+    1. Justificar o acesso à galeria de fotos (privacidade).
+    2. Habilitar o modo de execução em segundo plano (processing).
+    3. Permitir o agendamento da BGProcessingTask (identificador permitido).
+    4. Tornar a pasta Documents do app VISÍVEL e navegável no app Arquivos
+       (em "No meu iPhone" ▸ PhotoVault), SEM exigir iCloud nem conta paga.
+
+  IMPORTANTE: esta versão NÃO usa iCloud — funciona com um Apple ID gratuito
+  assinado pela AltStore Classic. Não há entitlements especiais.
+
+  Os valores $(...) são resolvidos pelo Xcode no build (ver project.yml).
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+
+    <!-- ===== Chaves padrão de bundle (necessárias para compilar) ========= -->
+    <key>CFBundleDevelopmentRegion</key>
+    <string>pt-BR</string>
+    <key>CFBundleExecutable</key>
+    <string>$(EXECUTABLE_NAME)</string>
+    <key>CFBundleIdentifier</key>
+    <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>$(PRODUCT_NAME)</string>
+    <key>CFBundleDisplayName</key>
+    <string>PhotoVault</string>
+    <key>CFBundlePackageType</key>
+    <string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSRequiresIPhoneOS</key>
+    <true/>
+
+    <!-- Tela de lançamento (dict vazio = launch em tela cheia sem storyboard). -->
+    <key>UILaunchScreen</key>
+    <dict/>
+
+    <key>UISupportedInterfaceOrientations</key>
+    <array>
+        <string>UIInterfaceOrientationPortrait</string>
+        <string>UIInterfaceOrientationLandscapeLeft</string>
+        <string>UIInterfaceOrientationLandscapeRight</string>
+    </array>
+
+    <!-- ===== 1. Privacidade — uso da biblioteca de fotos ================= -->
+    <key>NSPhotoLibraryUsageDescription</key>
+    <string>O PhotoVault precisa acessar suas fotos e vídeos para copiá-los, em backup unidirecional, para uma pasta do aplicativo (visível no app Arquivos). Nada é apagado da sua galeria.</string>
+
+    <!-- ===== 2. Compartilhamento de arquivos (substitui o iCloud) ======== -->
+    <!--   Estas DUAS chaves fazem a pasta Documents do app aparecer no      -->
+    <!--   app Arquivos (On My iPhone) e permitem abrir/copiar os arquivos.  -->
+    <key>UIFileSharingEnabled</key>
+    <true/>
+    <key>LSSupportsOpeningDocumentsInPlace</key>
+    <true/>
+
+    <!-- ===== 3. Execução em segundo plano =============================== -->
+    <key>UIBackgroundModes</key>
+    <array>
+        <string>processing</string>
+    </array>
+
+    <!-- ===== 4. Identificador permitido do BGTaskScheduler ============== -->
+    <!--   DEVE bater exatamente com SyncConfig.bgTaskIdentifier no código.   -->
+    <key>BGTaskSchedulerPermittedIdentifiers</key>
+    <array>
+        <string>com.photovault.sync.processing</string>
+    </array>
+
+</dict>
+</plist>

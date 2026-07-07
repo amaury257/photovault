@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  PhotoVaultiCloudSync.entitlements — versão BACKUP LOCAL (grátis)
+
+  Esta versão do app NÃO usa iCloud nem qualquer capability que exija conta paga
+  do Apple Developer Program. Portanto NÃO há entitlements especiais aqui.
+
+  O arquivo é mantido apenas como referência: o build do MacinCloud (project.yml)
+  NÃO aponta CODE_SIGN_ENTITLEMENTS para ele, então a AltStore consegue assinar o
+  app com um Apple ID gratuito sem tropeçar em entitlements não suportados.
+
+  Se um dia você migrar para a versão iCloud (conta paga), reintroduza aqui:
+    - com.apple.developer.icloud-services = CloudDocuments
+    - com.apple.developer.icloud-container-identifiers
+    - com.apple.developer.ubiquity-container-identifiers
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+</dict>
+</plist>

@@ -1,0 +1,41 @@
+Role: Senior iOS Engineer specialized in Swift, SwiftUI, PhotoKit, and iCloud Drive integrations.
+Context: You are working inside Google Antigravity with Claude Code to build a native iOS application from scratch.
+
+App Name: PhotoVault iCloud Sync
+Language: Swift
+UI Framework: SwiftUI
+Core iOS Frameworks: PhotoKit (PHPhotoLibrary), FileManager (Ubiquity Container), BackgroundTasks, UserDefaults.
+
+Objective:
+Create an iOS application that automatically copies all photos and videos from the local iPhone Photo Gallery to a specific, user-defined folder inside iCloud Drive. 
+
+CRITICAL REQUIREMENT (One-Way Sync):
+This must be a strict ONE-WAY backup. If the user deletes a photo from their iPhone Photo Gallery, the application MUST NOT delete it from the iCloud Drive folder. The app must maintain a local ledger (using UserDefaults or a lightweight tracker) of already-synced asset IDs (`localIdentifier`) so it knows what has been backed up, ignoring missing local files and preventing duplicate uploads.
+
+Please generate the complete codebase with the following architecture:
+
+1. Persistence & Tracker (`PhotoTracker.swift`):
+   - Create a manager to store an array or set of `localIdentifier` strings of already backed-up photos.
+   - This ensures that if an asset is deleted locally, the app doesn't try to sync it again or touch the iCloud version.
+
+2. Sync Engine (`PhotoSyncEngine.swift`):
+   - Request and handle Photo Library permissions (`PHPhotoLibrary.requestAuthorization`).
+   - Fetch all assets from the gallery ordered by creation date.
+   - Locate the iCloud Drive Ubiquity Container using `FileManager.default.url(forUbiquityContainerIdentifier: nil)`.
+   - Create a specific sub-folder inside the iCloud container (e.g., "PhotoVault_Backup").
+   - Iterate through gallery assets, filter out already synced IDs, extract the raw data (ImageData/VideoData), and write them into the iCloud folder using thread-safe `NSFileCoordinator`.
+
+3. Background Processing (`BackgroundSyncManager.swift`):
+   - Set up `BGTaskScheduler` and register a background processing task (`BGProcessingTaskRequest`) to trigger the Sync Engine periodically when the phone is idle/charging.
+
+4. User Interface (`ContentView.swift` & `MainApp.swift`):
+   - A clean, modern SwiftUI ecrã (dashboard).
+   - Display: Sync Status (Idle, Syncing, Completed), total photos in gallery, total photos backed up, and Date of Last Sync.
+   - A prominent manual "Sincronizar Agora" (Sync Now) button.
+   - A simple Settings view where the user can see/set the custom destination folder name in iCloud Drive.
+
+5. Project Configuration Instructions & Entitlements:
+   - Provide the exact XML/Key-Value pairs required for `Info.plist` (Privacy - Photo Library Usage Description, Background Modes).
+   - Provide instructions for the `.entitlements` file required for iCloud Documents/iCloud Drive storage capabilities.
+
+Generate the code files one by one, ensuring high-quality Swift code, proper error handling (for iCloud disconnection or full storage), and comprehensive comments.

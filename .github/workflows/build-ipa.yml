@@ -1,0 +1,61 @@
+# Compila o PhotoVault.ipa (NÃO ASSINADO) num macOS na nuvem — de graça.
+#
+# Como usar:
+#   1. Suba esta pasta para um repositório no GitHub (de preferência PÚBLICO,
+#      para os minutos de macOS serem gratuitos).
+#   2. No GitHub: aba "Actions" -> este workflow -> botão "Run workflow".
+#   3. Ao terminar, baixe o artefato "PhotoVault-ipa" (contém o PhotoVault.ipa).
+#   4. Instale no iPhone com a AltStore Classic (via AltServer no Windows).
+#
+# O .ipa sai sem assinatura de propósito — a AltStore assina com o seu Apple ID
+# no momento da instalação.
+
+name: Build IPA (unsigned)
+
+on:
+  workflow_dispatch:        # permite rodar manualmente pelo botão "Run workflow"
+  push:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    runs-on: macos-14       # runner macOS da nuvem (Xcode já vem instalado)
+    steps:
+      - name: Checkout do código
+        uses: actions/checkout@v4
+
+      - name: Instalar XcodeGen
+        run: brew install xcodegen
+
+      - name: Gerar o projeto Xcode
+        run: xcodegen generate
+
+      - name: Compilar (archive sem assinatura)
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project PhotoVaultiCloudSync.xcodeproj \
+            -scheme PhotoVaultiCloudSync \
+            -configuration Release \
+            -sdk iphoneos \
+            -archivePath build/PhotoVault.xcarchive \
+            archive \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Empacotar .ipa
+        run: |
+          set -euo pipefail
+          APP_PATH="$(ls -d build/PhotoVault.xcarchive/Products/Applications/*.app | head -n 1)"
+          mkdir -p build/Payload
+          cp -R "$APP_PATH" build/Payload/
+          (cd build && zip -qry PhotoVault.ipa Payload)
+          rm -rf build/Payload
+
+      - name: Publicar o artefato (PhotoVault.ipa)
+        uses: actions/upload-artifact@v4
+        with:
+          name: PhotoVault-ipa
+          path: build/PhotoVault.ipa
+          if-no-files-found: error
