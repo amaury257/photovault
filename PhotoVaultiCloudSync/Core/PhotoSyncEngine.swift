@@ -55,14 +55,15 @@ actor PhotoSyncEngine {
 
     // MARK: - Permissão de acesso à galeria
 
-    /// Solicita (ou confirma) a autorização de leitura da biblioteca de fotos.
+    /// Solicita (ou confirma) a autorização de acesso à biblioteca de fotos.
     ///
-    /// Usamos `.readOnly`: o app apenas LÊ a galeria, nunca modifica/apaga —
-    /// coerente com o backup unidirecional e com menor fricção de permissão.
+    /// Usamos `.readWrite` (o único nível que concede leitura — `PHAccessLevel` não
+    /// tem `.readOnly`). Mesmo assim, o app apenas LÊ a galeria, nunca apaga —
+    /// coerente com o backup unidirecional.
     ///
     /// - Throws: `SyncError.permissaoNegada` se o usuário não autorizar.
     func requestAuthorization() async throws {
-        let atual = PHPhotoLibrary.authorizationStatus(for: .readOnly)
+        let atual = PHPhotoLibrary.authorizationStatus(for: .readWrite)
         let status: PHAuthorizationStatus
 
         switch atual {
@@ -70,7 +71,7 @@ actor PhotoSyncEngine {
             status = atual
         case .notDetermined:
             // Solicita e aguarda a decisão do usuário de forma assíncrona.
-            status = await PHPhotoLibrary.requestAuthorization(for: .readOnly)
+            status = await PHPhotoLibrary.requestAuthorization(for: .readWrite)
         default:
             status = atual
         }

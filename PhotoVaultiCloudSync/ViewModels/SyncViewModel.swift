@@ -41,15 +41,18 @@ final class SyncViewModel: ObservableObject {
 
     // MARK: - Init
 
-    /// Injeta as dependências compartilhadas. Por padrão, usa as instâncias do
-    /// `BackgroundSyncManager.shared` para manter estado único no app.
+    /// Injeta as dependências compartilhadas. Por padrão (parâmetros `nil`), usa as
+    /// instâncias do `BackgroundSyncManager.shared` para manter estado único no app.
+    ///
+    /// Os padrões são resolvidos DENTRO do init (contexto `@MainActor`), pois valores
+    /// padrão de parâmetro não podem referenciar estado isolado ao main actor.
     init(
-        engine: PhotoSyncEngine = BackgroundSyncManager.shared.engineCompartilhado,
-        tracker: PhotoTracker = BackgroundSyncManager.shared.trackerCompartilhado,
+        engine: PhotoSyncEngine? = nil,
+        tracker: PhotoTracker? = nil,
         defaults: UserDefaults = .standard
     ) {
-        self.engine = engine
-        self.tracker = tracker
+        self.engine = engine ?? BackgroundSyncManager.shared.engineCompartilhado
+        self.tracker = tracker ?? BackgroundSyncManager.shared.trackerCompartilhado
         self.defaults = defaults
         self.folderName = defaults.string(forKey: SyncConfig.DefaultsKey.folderName)
             ?? SyncConfig.nomePastaPadrao
@@ -75,7 +78,7 @@ final class SyncViewModel: ObservableObject {
 
         // Só conta a galeria se já tivermos autorização (evita prompt indesejado
         // apenas por abrir a tela).
-        let auth = PHPhotoLibrary.authorizationStatus(for: .readOnly)
+        let auth = PHPhotoLibrary.authorizationStatus(for: .readWrite)
         if auth == .authorized || auth == .limited {
             novoStats.totalNaGaleria = await engine.contarAssetsNaGaleria()
         }
