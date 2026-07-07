@@ -26,9 +26,14 @@ jobs:
 
       - name: Selecionar o Xcode mais recente
         run: |
+          echo "=== Xcodes instalados no runner ==="
+          ls -d /Applications/Xcode_*.app || true
           XC="$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -n 1)"
           if [ -n "$XC" ]; then sudo xcode-select -s "$XC"; fi
+          echo "=== Xcode selecionado ==="
           xcodebuild -version
+          echo "=== SDKs de iOS disponiveis ==="
+          xcodebuild -showsdks | grep -i "iphoneos" || true
 
       - name: Instalar XcodeGen
         run: brew install xcodegen
