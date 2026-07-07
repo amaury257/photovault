@@ -19,10 +19,16 @@ on:
 
 jobs:
   build:
-    runs-on: macos-14       # runner macOS da nuvem (Xcode já vem instalado)
+    runs-on: macos-15       # imagem com Xcode 16 (abre o projeto gerado pelo XcodeGen)
     steps:
       - name: Checkout do código
         uses: actions/checkout@v4
+
+      - name: Selecionar o Xcode mais recente
+        run: |
+          XC="$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -n 1)"
+          if [ -n "$XC" ]; then sudo xcode-select -s "$XC"; fi
+          xcodebuild -version
 
       - name: Instalar XcodeGen
         run: brew install xcodegen
