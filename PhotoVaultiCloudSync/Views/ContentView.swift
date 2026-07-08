@@ -27,6 +27,7 @@ struct ContentView: View {
                     grupoContadores
                     botaoSincronizar
                     rodapeInformativo
+                    versaoLabel
                 }
                 .padding()
             }
@@ -163,6 +164,21 @@ struct ContentView: View {
             .foregroundStyle(.secondary)
             .multilineTextAlignment(.center)
             .padding(.top, 4)
+    }
+
+    /// Selo com a versão do app (lida do bundle). Serve para o usuário conferir
+    /// qual build está instalada após uma atualização pela AltStore.
+    private var versaoLabel: some View {
+        Text("PhotoVault \(Self.appVersion)")
+            .font(.caption2)
+            .foregroundStyle(.tertiary)
+            .padding(.top, 8)
+    }
+
+    /// Versão exibida (CFBundleShortVersionString), ex.: "v1.0.6".
+    private static var appVersion: String {
+        let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
+        return "v\(v)"
     }
 
     // MARK: - Derivações de estilo a partir do status
