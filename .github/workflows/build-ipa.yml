@@ -1,39 +1,40 @@
-# Compila o PhotoVault.ipa (NÃO ASSINADO) num macOS na nuvem — de graça.
+# Compila o PhotoVault.ipa num macOS na nuvem, publica no GitHub Releases e
+# gera a "source" da AltStore (apps.json) — para atualizações com 1 toque.
 #
-# Como usar:
-#   1. Suba esta pasta para um repositório no GitHub (de preferência PÚBLICO,
-#      para os minutos de macOS serem gratuitos).
-#   2. No GitHub: aba "Actions" -> este workflow -> botão "Run workflow".
-#   3. Ao terminar, baixe o artefato "PhotoVault-ipa" (contém o PhotoVault.ipa).
-#   4. Instale no iPhone com a AltStore Classic (via AltServer no Windows).
+# Fluxo automatico: a cada push na main, este workflow:
+#   1. compila o .ipa (nao assinado; a AltStore assina no aparelho)
+#   2. cria/atualiza a Release "latest" com o PhotoVault.ipa
+#   3. gera o apps.json (catalogo da AltStore) apontando para esse .ipa
 #
-# O .ipa sai sem assinatura de propósito — a AltStore assina com o seu Apple ID
-# no momento da instalação.
+# Voce adiciona a source UMA vez na AltStore e depois so toca em "Update".
 
 name: Build IPA (unsigned)
 
 on:
-  workflow_dispatch:        # permite rodar manualmente pelo botão "Run workflow"
+  workflow_dispatch:
   push:
     branches: [ main, master ]
 
+permissions:
+  contents: write            # necessario para criar Releases
+
 jobs:
   build:
-    runs-on: macos-15       # imagem com Xcode 16 (abre o projeto gerado pelo XcodeGen)
+    runs-on: macos-15
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      OWNER_REPO: ${{ github.repository }}
+      VERSION: 1.0.${{ github.run_number }}
+      BUILD_NUM: ${{ github.run_number }}
     steps:
       - name: Checkout do código
         uses: actions/checkout@v4
 
       - name: Selecionar o Xcode mais recente
         run: |
-          echo "=== Xcodes instalados no runner ==="
-          ls -d /Applications/Xcode_*.app || true
           XC="$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -n 1)"
           if [ -n "$XC" ]; then sudo xcode-select -s "$XC"; fi
-          echo "=== Xcode selecionado ==="
           xcodebuild -version
-          echo "=== SDKs de iOS disponiveis ==="
-          xcodebuild -showsdks | grep -i "iphoneos" || true
 
       - name: Instalar XcodeGen
         run: brew install xcodegen
@@ -41,7 +42,7 @@ jobs:
       - name: Gerar o projeto Xcode
         run: xcodegen generate
 
-      - name: Compilar (archive sem assinatura)
+      - name: Compilar (archive sem assinatura, versão dinâmica)
         run: |
           set -euo pipefail
           xcodebuild \
@@ -53,7 +54,9 @@ jobs:
             archive \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_ALLOWED=NO
+            CODE_SIGNING_ALLOWED=NO \
+            MARKETING_VERSION="${VERSION}" \
+            CURRENT_PROJECT_VERSION="${BUILD_NUM}"
 
       - name: Empacotar .ipa
         run: |
@@ -64,7 +67,49 @@ jobs:
           (cd build && zip -qry PhotoVault.ipa Payload)
           rm -rf build/Payload
 
-      - name: Publicar o artefato (PhotoVault.ipa)
+      - name: Gerar apps.json (source da AltStore)
+        run: |
+          set -euo pipefail
+          SIZE=$(stat -f%z build/PhotoVault.ipa)
+          DATE=$(date +%Y-%m-%d)
+          DL="https://github.com/${OWNER_REPO}/releases/download/latest/PhotoVault.ipa"
+          ICON="https://raw.githubusercontent.com/${OWNER_REPO}/main/assets/icon.png"
+          cat > build/apps.json <<EOF
+          {
+            "name": "PhotoVault (amaury257)",
+            "identifier": "com.photovault.source",
+            "sourceURL": "https://github.com/${OWNER_REPO}/releases/download/latest/apps.json",
+            "apps": [
+              {
+                "name": "PhotoVault",
+                "bundleIdentifier": "com.photovault.PhotoVault",
+                "developerName": "amaury257",
+                "subtitle": "Backup unidirecional das fotos para o app Arquivos",
+                "version": "${VERSION}",
+                "versionDate": "${DATE}",
+                "versionDescription": "Build automática ${BUILD_NUM}.",
+                "downloadURL": "${DL}",
+                "localizedDescription": "Faz backup unidirecional de todas as fotos e vídeos da galeria para uma pasta do app, visível no app Arquivos (No meu iPhone / PhotoVault). Apagar da galeria não remove do backup.",
+                "iconURL": "${ICON}",
+                "tintColor": "FF9500",
+                "size": ${SIZE},
+                "screenshotURLs": []
+              }
+            ]
+          }
+          EOF
+          echo "apps.json gerado (size=${SIZE}, version=${VERSION})"
+
+      - name: Publicar Release "latest" (ipa + apps.json)
+        run: |
+          set -euo pipefail
+          gh release delete latest --yes --cleanup-tag 2>/dev/null || true
+          gh release create latest \
+            build/PhotoVault.ipa build/apps.json \
+            --title "PhotoVault — última build (${VERSION})" \
+            --notes "Build automática ${BUILD_NUM}. Instale/atualize pela AltStore."
+
+      - name: Publicar artefato (para download direto do .ipa)
         uses: actions/upload-artifact@v4
         with:
           name: PhotoVault-ipa
