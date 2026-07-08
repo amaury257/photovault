@@ -1,12 +1,9 @@
-# Compila o PhotoVault.ipa num macOS na nuvem, publica no GitHub Releases e
-# gera a "source" da AltStore (apps.json) — para atualizações com 1 toque.
+# Compila o PhotoVault.ipa e publica a source da AltStore em LINK DIRETO
+# (raw.githubusercontent.com) — sem redirecionamento, para evitar erros de TLS
+# em redes que quebram o redirect do GitHub Releases.
 #
-# Fluxo automatico: a cada push na main, este workflow:
-#   1. compila o .ipa (nao assinado; a AltStore assina no aparelho)
-#   2. cria/atualiza a Release "latest" com o PhotoVault.ipa
-#   3. gera o apps.json (catalogo da AltStore) apontando para esse .ipa
-#
-# Voce adiciona a source UMA vez na AltStore e depois so toca em "Update".
+# A cada push na main: compila o .ipa (nao assinado), copia .ipa + apps.json para
+# a pasta pages/ e commita (com [skip ci]) — assim ficam servidos por link direto.
 
 name: Build IPA (unsigned)
 
@@ -16,7 +13,7 @@ on:
     branches: [ main, master ]
 
 permissions:
-  contents: write            # necessario para criar Releases
+  contents: write
 
 jobs:
   build:
@@ -67,18 +64,20 @@ jobs:
           (cd build && zip -qry PhotoVault.ipa Payload)
           rm -rf build/Payload
 
-      - name: Gerar apps.json (source da AltStore)
+      - name: Gerar pages/ (source + ipa em link direto)
         run: |
           set -euo pipefail
+          mkdir -p pages
+          cp build/PhotoVault.ipa pages/PhotoVault.ipa
           SIZE=$(stat -f%z build/PhotoVault.ipa)
           DATE=$(date +%Y-%m-%d)
-          DL="https://github.com/${OWNER_REPO}/releases/download/latest/PhotoVault.ipa"
+          RAW="https://raw.githubusercontent.com/${OWNER_REPO}/main/pages"
           ICON="https://raw.githubusercontent.com/${OWNER_REPO}/main/assets/icon.png"
-          cat > build/apps.json <<EOF
+          cat > pages/apps.json <<EOF
           {
             "name": "PhotoVault (amaury257)",
             "identifier": "com.photovault.source",
-            "sourceURL": "https://github.com/${OWNER_REPO}/releases/download/latest/apps.json",
+            "sourceURL": "${RAW}/apps.json",
             "apps": [
               {
                 "name": "PhotoVault",
@@ -88,7 +87,7 @@ jobs:
                 "version": "${VERSION}",
                 "versionDate": "${DATE}",
                 "versionDescription": "Build automática ${BUILD_NUM}.",
-                "downloadURL": "${DL}",
+                "downloadURL": "${RAW}/PhotoVault.ipa",
                 "localizedDescription": "Faz backup unidirecional de todas as fotos e vídeos da galeria para uma pasta do app, visível no app Arquivos (No meu iPhone / PhotoVault). Apagar da galeria não remove do backup.",
                 "iconURL": "${ICON}",
                 "tintColor": "FF9500",
@@ -98,18 +97,22 @@ jobs:
             ]
           }
           EOF
-          echo "apps.json gerado (size=${SIZE}, version=${VERSION})"
+          echo "pages/apps.json gerado (size=${SIZE}, version=${VERSION})"
 
-      - name: Publicar Release "latest" (ipa + apps.json)
+      - name: Commitar pages/ (link direto) e Release
         run: |
           set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -f pages/apps.json pages/PhotoVault.ipa
+          git commit -m "chore: publica PhotoVault na source (link direto) [skip ci]" || echo "sem mudanca"
+          git push
           gh release delete latest --yes --cleanup-tag 2>/dev/null || true
-          gh release create latest \
-            build/PhotoVault.ipa build/apps.json \
+          gh release create latest build/PhotoVault.ipa \
             --title "PhotoVault — última build (${VERSION})" \
-            --notes "Build automática ${BUILD_NUM}. Instale/atualize pela AltStore."
+            --notes "Build ${BUILD_NUM}."
 
-      - name: Publicar artefato (para download direto do .ipa)
+      - name: Publicar artefato (download direto do .ipa)
         uses: actions/upload-artifact@v4
         with:
           name: PhotoVault-ipa
