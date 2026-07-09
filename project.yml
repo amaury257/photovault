@@ -39,7 +39,9 @@ targets:
           - "*.entitlements"             # versão local não usa entitlements
     settings:
       base:
-        PRODUCT_NAME: PhotoVault
+        PRODUCT_NAME: iAmaury
+        # Bundle identifier mantido de propósito (não muda com o rename): trocá-lo
+        # faria a AltStore tratar como um app novo, perdendo o histórico de updates.
         PRODUCT_BUNDLE_IDENTIFIER: com.photovault.PhotoVault
         INFOPLIST_FILE: PhotoVaultiCloudSync/Resources/Info.plist
         GENERATE_INFOPLIST_FILE: "NO"

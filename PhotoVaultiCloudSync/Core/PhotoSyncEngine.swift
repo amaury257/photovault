@@ -4,8 +4,11 @@
 //
 //  Motor de sincronização. Responsável por:
 //    1. Solicitar/validar a permissão de acesso à galeria (PhotoKit).
-//    2. Localizar a pasta de backup local (Documents do app, visível no Arquivos).
-//    3. Criar a subpasta de destino escolhida pelo usuário.
+//    2. Localizar a pasta de destino — uma pasta EXTERNA escolhida pelo usuário
+//       via seletor de Arquivos (bookmark de segurança; pode estar no iCloud
+//       Drive), ou, na ausência de uma, a pasta local do app (Documents,
+//       visível no Arquivos).
+//    3. Criar a subpasta local (quando aplicável).
 //    4. Iterar os assets, pular os que já estão no livro-razão e exportar as
 //       mídias para a pasta de backup usando escrita coordenada (NSFileCoordinator),
 //       em um de dois formatos:
@@ -84,20 +87,57 @@ actor PhotoSyncEngine {
         }
     }
 
-    // MARK: - Localização da pasta de backup (local, app Arquivos)
+    // MARK: - Localização da pasta de backup
 
-    /// Resolve a URL da pasta de destino dentro do diretório `Documents` do app,
-    /// criando-a se necessário. O caminho é `<Documents>/<folderName>/`.
+    /// Resolve a URL da pasta de destino. Duas origens possíveis:
+    ///   1. **Pasta externa escolhida pelo usuário** (via seletor de Arquivos nas
+    ///      Configurações — pode estar dentro do iCloud Drive, em outro app de
+    ///      nuvem, ou em qualquer local acessível pelo app Arquivos). Persistida
+    ///      como um *security-scoped bookmark* em `UserDefaults`.
+    ///   2. **Pasta local do próprio app** (`<Documents>/<folderName>/`), usada
+    ///      como padrão enquanto nenhuma pasta externa tiver sido escolhida.
+    ///      Fica visível no app Arquivos (em "No meu iPhone") porque o
+    ///      Info.plist declara `UIFileSharingEnabled` +
+    ///      `LSSupportsOpeningDocumentsInPlace`.
     ///
-    /// Essa pasta fica **visível e navegável no app Arquivos** (em "No meu iPhone"
-    /// ▸ PhotoVault) porque o Info.plist declara `UIFileSharingEnabled` e
-    /// `LSSupportsOpeningDocumentsInPlace`. Não exige iCloud nem conta paga de
-    /// desenvolvedor — funciona com Apple ID gratuito + AltStore.
+    /// Nenhuma das duas exige conta paga de desenvolvedor: a pasta externa usa o
+    /// seletor de arquivos do próprio sistema (não um container de iCloud do
+    /// app), e a local funciona com Apple ID gratuito + AltStore.
     ///
-    /// - Parameter folderName: nome da subpasta escolhido pelo usuário.
+    /// - Parameter folderName: nome da subpasta (só usado no caminho local).
     /// - Returns: URL da pasta de destino pronta para gravação.
-    /// - Throws: `SyncError.containerNaoEncontrado` / `.escritaFalhou`.
+    /// - Throws: `SyncError.pastaExternaInacessivel` / `.containerNaoEncontrado` / `.escritaFalhou`.
     private func resolverPastaDestino(folderName: String) throws -> URL {
+        if let bookmarkData = UserDefaults.standard.data(forKey: SyncConfig.DefaultsKey.destinationBookmark) {
+            return try resolverPastaExterna(bookmarkData)
+        }
+        return try resolverPastaLocal(folderName: folderName)
+    }
+
+    /// Resolve uma pasta externa a partir de um bookmark de segurança salvo
+    /// anteriormente (criado quando o usuário escolheu a pasta nas Configurações).
+    private func resolverPastaExterna(_ bookmarkData: Data) throws -> URL {
+        var estaDesatualizado = false
+        let url: URL
+        do {
+            url = try URL(
+                resolvingBookmarkData: bookmarkData,
+                options: [],
+                relativeTo: nil,
+                bookmarkDataIsStale: &estaDesatualizado
+            )
+        } catch {
+            // Bookmark corrompido, ou a pasta/permissão não existe mais.
+            throw SyncError.pastaExternaInacessivel
+        }
+        // `estaDesatualizado` sinaliza que o bookmark deveria ser regravado,
+        // mas a URL resolvida normalmente continua utilizável nesta chamada —
+        // não é motivo para falhar a sincronização.
+        return url
+    }
+
+    /// Resolve (e cria, se necessário) a pasta local padrão dentro de `Documents`.
+    private func resolverPastaLocal(folderName: String) throws -> URL {
         let fm = FileManager.default
 
         // Documents do sandbox do app — é o que aparece no app Arquivos.
@@ -170,6 +210,16 @@ actor PhotoSyncEngine {
         try await requestAuthorization()
         await tracker.load()
         let destino = try resolverPastaDestino(folderName: folderName)
+
+        // Mantém o acesso à pasta de destino "aberto" durante toda a sincronização.
+        // Necessário para pastas externas escolhidas via seletor de Arquivos
+        // (bookmark de segurança); em uma pasta local do próprio app, esta chamada
+        // é inofensiva (retorna true sem efeito — não há escopo de segurança a
+        // iniciar). Ver: https://developer.apple.com/documentation/foundation/nsurl/1417051-startaccessingsecurityscopedresource
+        guard destino.startAccessingSecurityScopedResource() else {
+            throw SyncError.pastaExternaInacessivel
+        }
+        defer { destino.stopAccessingSecurityScopedResource() }
 
         // 2. Levanta os assets e calcula quantos ainda estão pendentes, para que a
         //    barra de progresso reflita apenas o trabalho real desta execução.

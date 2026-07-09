@@ -27,11 +27,17 @@ final class SyncViewModel: ObservableObject {
     /// Contadores e data exibidos no dashboard.
     @Published private(set) var stats: SyncStats = SyncStats()
 
-    /// Nome da pasta de backup no app Arquivos (editável nas Configurações).
+    /// Nome da pasta de backup local no app Arquivos (usado só quando NENHUMA
+    /// pasta externa foi escolhida — ver `destinoExternoNome`).
     @Published var folderName: String
 
     /// Formato de exportação escolhido (Original ou Compatível).
     @Published var exportFormat: ExportFormat
+
+    /// Nome de exibição da pasta EXTERNA escolhida pelo usuário via seletor de
+    /// Arquivos (pode estar no iCloud Drive). `nil` = nenhuma escolhida ainda,
+    /// e o backup usa a pasta local padrão do app.
+    @Published private(set) var destinoExternoNome: String?
 
     // MARK: - Dependências
 
@@ -63,6 +69,13 @@ final class SyncViewModel: ObservableObject {
         self.stats.ultimaSync = defaults.object(
             forKey: SyncConfig.DefaultsKey.lastSyncDate
         ) as? Date
+        // Resolve (melhor esforço, só para exibição) o nome da pasta externa
+        // já escolhida em uma sessão anterior, se houver.
+        if let bookmarkData = defaults.data(forKey: SyncConfig.DefaultsKey.destinationBookmark) {
+            self.destinoExternoNome = Self.nomeAmigavel(deBookmark: bookmarkData)
+        } else {
+            self.destinoExternoNome = nil
+        }
     }
 
     // MARK: - Ações
@@ -150,9 +163,56 @@ final class SyncViewModel: ObservableObject {
         BackgroundSyncManager.shared.atualizarFormato(novoFormato)
     }
 
+    /// Persiste a pasta EXTERNA escolhida pelo usuário no seletor de Arquivos
+    /// (aceita pastas dentro do iCloud Drive ou qualquer outro provedor), via
+    /// *security-scoped bookmark* — necessário para reter o acesso entre
+    /// lançamentos do app e execuções em background.
+    ///
+    /// A partir de agora, esta pasta passa a ter prioridade sobre a pasta local
+    /// (ver `PhotoSyncEngine.resolverPastaDestino`). Itens já enviados para a
+    /// pasta anterior permanecem lá — só os próximos backups usam a nova pasta.
+    ///
+    /// - Throws: `SyncError.pastaExternaInacessivel` se o sistema negar o acesso.
+    func salvarPastaDestinoExterna(_ url: URL) throws {
+        guard url.startAccessingSecurityScopedResource() else {
+            throw SyncError.pastaExternaInacessivel
+        }
+        defer { url.stopAccessingSecurityScopedResource() }
+
+        let bookmark = try url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
+        defaults.set(bookmark, forKey: SyncConfig.DefaultsKey.destinationBookmark)
+        destinoExternoNome = url.lastPathComponent
+    }
+
+    /// Remove a pasta externa escolhida, revertendo o backup para a pasta local
+    /// padrão do app (`folderName`, dentro de Documents).
+    func removerPastaDestinoExterna() {
+        defaults.removeObject(forKey: SyncConfig.DefaultsKey.destinationBookmark)
+        destinoExternoNome = nil
+    }
+
+    /// Resolve o nome de exibição (último componente do caminho) de um bookmark
+    /// salvo, só para fins de UI — falhas aqui não são fatais (retorna `nil`).
+    private static func nomeAmigavel(deBookmark bookmarkData: Data) -> String? {
+        var estaDesatualizado = false
+        guard let url = try? URL(
+            resolvingBookmarkData: bookmarkData,
+            options: [],
+            relativeTo: nil,
+            bookmarkDataIsStale: &estaDesatualizado
+        ) else {
+            return nil
+        }
+        return url.lastPathComponent
+    }
+
     /// Caminho amigável exibido nas Configurações (apenas informativo).
-    /// Corresponde ao que o usuário vê no app Arquivos: No meu iPhone ▸ PhotoVault.
+    /// Mostra a pasta externa escolhida, se houver; senão, o caminho local
+    /// visível no app Arquivos: No meu iPhone ▸ iAmaury ▸ <nome>.
     var caminhoExibicao: String {
-        "No meu iPhone / PhotoVault / \(folderName)"
+        if let destinoExternoNome {
+            return destinoExternoNome
+        }
+        return "No meu iPhone / iAmaury / \(folderName)"
     }
 }

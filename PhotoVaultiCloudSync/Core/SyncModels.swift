@@ -65,6 +65,9 @@ enum SyncError: LocalizedError, Equatable {
     case escritaFalhou(motivo: String)
     /// A sincronização foi cancelada (ex.: expiração da tarefa em background).
     case cancelada
+    /// A pasta externa escolhida pelo usuário (via seletor de Arquivos) não
+    /// pôde ser acessada — foi movida, apagada, ou a permissão expirou.
+    case pastaExternaInacessivel
 
     var errorDescription: String? {
         switch self {
@@ -84,6 +87,9 @@ enum SyncError: LocalizedError, Equatable {
             return "Falha ao gravar o backup: \(motivo)"
         case .cancelada:
             return "Sincronização cancelada."
+        case .pastaExternaInacessivel:
+            return "Não foi possível acessar a pasta de destino escolhida. "
+                + "Escolha a pasta novamente em Configurações."
         }
     }
 }
@@ -146,7 +152,7 @@ enum ExportFormat: String, CaseIterable, Identifiable {
 enum SyncConfig {
 
     /// Nome padrão da subpasta de backup criada dentro de Documents do app.
-    static let nomePastaPadrao = "PhotoVault_Backup"
+    static let nomePastaPadrao = "iAmaury_Backup"
 
     /// Identificador da tarefa de processamento em background.
     ///
@@ -166,6 +172,10 @@ enum SyncConfig {
         static let folderName = "pv.folderName"
         static let lastSyncDate = "pv.lastSyncDate"
         static let exportFormat = "pv.exportFormat"
+        /// Bookmark de segurança (Data) da pasta externa escolhida pelo usuário
+        /// via seletor de Arquivos (pode estar dentro do iCloud Drive ou em
+        /// qualquer outro provedor). Ausente = usa a pasta local padrão do app.
+        static let destinationBookmark = "pv.destinationBookmarkData"
     }
 
     /// Nome do arquivo do livro-razão (ledger) em Application Support.

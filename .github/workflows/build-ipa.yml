@@ -75,20 +75,20 @@ jobs:
           ICON="https://raw.githubusercontent.com/${OWNER_REPO}/main/assets/icon.png"
           cat > pages/apps.json <<EOF
           {
-            "name": "PhotoVault (amaury257)",
+            "name": "iAmaury (amaury257)",
             "identifier": "com.photovault.source",
             "sourceURL": "${RAW}/apps.json",
             "apps": [
               {
-                "name": "PhotoVault",
+                "name": "iAmaury",
                 "bundleIdentifier": "com.photovault.PhotoVault",
                 "developerName": "amaury257",
-                "subtitle": "Backup unidirecional das fotos para o app Arquivos",
+                "subtitle": "Backup unidirecional das fotos para a pasta que você escolher",
                 "version": "${VERSION}",
                 "versionDate": "${DATE}",
                 "versionDescription": "Build automática ${BUILD_NUM}.",
                 "downloadURL": "${RAW}/PhotoVault.ipa",
-                "localizedDescription": "Faz backup unidirecional de todas as fotos e vídeos da galeria para uma pasta do app, visível no app Arquivos (No meu iPhone / PhotoVault). Apagar da galeria não remove do backup.",
+                "localizedDescription": "Faz backup unidirecional de todas as fotos e vídeos da galeria para uma pasta de destino escolhida por você (pode ser dentro do iCloud Drive) ou, se nenhuma for escolhida, para uma pasta local visível no app Arquivos (No meu iPhone / iAmaury). Apagar da galeria não remove do backup.",
                 "iconURL": "${ICON}",
                 "tintColor": "FF9500",
                 "size": ${SIZE},

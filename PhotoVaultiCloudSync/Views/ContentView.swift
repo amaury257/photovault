@@ -10,6 +10,7 @@
 //
 
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ContentView: View {
 
@@ -19,11 +20,20 @@ struct ContentView: View {
     /// Controla a apresentação da folha de Configurações.
     @State private var mostrandoConfiguracoes = false
 
+    /// Controla a apresentação do seletor de pasta (banner de solicitação).
+    @State private var mostrandoPickerInicial = false
+
+    /// Erro do seletor de pasta iniciado pelo banner, se houver.
+    @State private var erroPickerInicial: String?
+
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 20) {
                     cartaoStatus
+                    if vm.destinoExternoNome == nil {
+                        bannerEscolhaPasta
+                    }
                     grupoContadores
                     botaoSincronizar
                     rodapeInformativo
@@ -31,7 +41,7 @@ struct ContentView: View {
                 }
                 .padding()
             }
-            .navigationTitle("PhotoVault")
+            .navigationTitle("iAmaury")
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button {
@@ -46,11 +56,68 @@ struct ContentView: View {
                 SettingsView()
                     .environmentObject(vm)
             }
+            .fileImporter(
+                isPresented: $mostrandoPickerInicial,
+                allowedContentTypes: [.folder],
+                allowsMultipleSelection: false
+            ) { resultado in
+                switch resultado {
+                case .success(let urls):
+                    guard let url = urls.first else { return }
+                    do {
+                        try vm.salvarPastaDestinoExterna(url)
+                        erroPickerInicial = nil
+                    } catch {
+                        erroPickerInicial = "Não foi possível usar essa pasta. Tente novamente."
+                    }
+                case .failure(let error):
+                    erroPickerInicial = error.localizedDescription
+                }
+            }
             // Atualiza os contadores ao abrir a tela.
             .task {
                 await vm.refreshCounts()
             }
         }
+    }
+
+    // MARK: - Banner de solicitação da pasta de destino
+
+    /// Convida o usuário a escolher uma pasta de destino (pode ser dentro do
+    /// iCloud Drive) enquanto nenhuma tiver sido escolhida. É esse banner que
+    /// efetivamente "solicita" a pasta — a opção não fica só escondida em
+    /// Configurações.
+    private var bannerEscolhaPasta: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Image(systemName: "folder.badge.questionmark")
+                    .font(.title2)
+                    .foregroundStyle(.blue)
+                Text("Escolha a pasta de destino")
+                    .font(.headline)
+                Spacer()
+            }
+            Text("Você ainda não escolheu onde salvar o backup — pode ser uma pasta dentro "
+                + "do iCloud Drive. Sem escolher, o app usa uma pasta local própria.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            Button {
+                mostrandoPickerInicial = true
+            } label: {
+                Text("Escolher pasta agora")
+                    .fontWeight(.semibold)
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+
+            if let erroPickerInicial {
+                Text(erroPickerInicial)
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+            }
+        }
+        .padding(16)
+        .background(Color.blue.opacity(0.10), in: RoundedRectangle(cornerRadius: 16))
     }
 
     // MARK: - Cartão de status
@@ -159,7 +226,7 @@ struct ContentView: View {
     // MARK: - Rodapé
 
     private var rodapeInformativo: some View {
-        Text("O backup é unidirecional: apagar uma foto da galeria não a remove da pasta de backup. Os arquivos ficam no app Arquivos, em \"No meu iPhone / PhotoVault\".")
+        Text("O backup é unidirecional: apagar uma foto da galeria não a remove da pasta de backup. Os arquivos ficam no app Arquivos, em \"No meu iPhone / iAmaury\" (ou na pasta que você escolher).")
             .font(.caption)
             .foregroundStyle(.secondary)
             .multilineTextAlignment(.center)
@@ -169,7 +236,7 @@ struct ContentView: View {
     /// Selo com a versão do app (lida do bundle). Serve para o usuário conferir
     /// qual build está instalada após uma atualização pela AltStore.
     private var versaoLabel: some View {
-        Text("PhotoVault \(Self.appVersion)")
+        Text("iAmaury \(Self.appVersion)")
             .font(.caption2)
             .foregroundStyle(.tertiary)
             .padding(.top, 8)

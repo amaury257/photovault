@@ -30,7 +30,7 @@
     <key>CFBundleName</key>
     <string>$(PRODUCT_NAME)</string>
     <key>CFBundleDisplayName</key>
-    <string>PhotoVault</string>
+    <string>iAmaury</string>
     <key>CFBundlePackageType</key>
     <string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
     <key>CFBundleShortVersionString</key>
@@ -53,7 +53,7 @@
 
     <!-- ===== 1. Privacidade — uso da biblioteca de fotos ================= -->
     <key>NSPhotoLibraryUsageDescription</key>
-    <string>O PhotoVault precisa acessar suas fotos e vídeos para copiá-los, em backup unidirecional, para uma pasta do aplicativo (visível no app Arquivos). Nada é apagado da sua galeria.</string>
+    <string>O iAmaury precisa acessar suas fotos e vídeos para copiá-los, em backup unidirecional, para a pasta de destino escolhida. Nada é apagado da sua galeria.</string>
 
     <!-- ===== 2. Compartilhamento de arquivos (substitui o iCloud) ======== -->
     <!--   Estas DUAS chaves fazem a pasta Documents do app aparecer no      -->
