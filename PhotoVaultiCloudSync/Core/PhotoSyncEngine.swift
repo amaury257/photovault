@@ -314,8 +314,9 @@ actor PhotoSyncEngine {
 
             try await escreverRecursoEmArquivo(recurso, tempURL: tempURL)
 
-            // 3b. Move o arquivo temporário para a pasta de destino (escrita coordenada).
-            try coordenarMovimento(de: tempURL, para: destinoFinal)
+            // 3b. Move o arquivo temporário para a pasta de destino (escrita coordenada),
+            //     preservando a data original da foto/vídeo (não a data do backup).
+            try coordenarMovimento(de: tempURL, para: destinoFinal, dataOriginal: asset.creationDate)
         }
     }
 
@@ -359,7 +360,7 @@ actor PhotoSyncEngine {
             if FileManager.default.fileExists(atPath: destinoFinal.path) { return }
 
             let jpeg = try await obterJPEGCompativel(asset)
-            try gravarDados(jpeg, em: destinoFinal, nomeTemp: "\(base).jpg")
+            try gravarDados(jpeg, em: destinoFinal, nomeTemp: "\(base).jpg", dataOriginal: asset.creationDate)
 
         case .video:
             let destinoFinal = destino.appendingPathComponent(
@@ -369,7 +370,7 @@ actor PhotoSyncEngine {
             let tempURL = FileManager.default.temporaryDirectory
                 .appendingPathComponent(UUID().uuidString + "_" + base + ".mp4")
             try await exportarVideoH264(asset, paraArquivo: tempURL)
-            try coordenarMovimento(de: tempURL, para: destinoFinal)
+            try coordenarMovimento(de: tempURL, para: destinoFinal, dataOriginal: asset.creationDate)
 
         default:
             // Áudio ou tipos desconhecidos: nada a exportar no modo compatível.
@@ -485,6 +486,10 @@ actor PhotoSyncEngine {
         sessao.outputURL = tempURL
         sessao.outputFileType = .mp4                 // container universal (.mp4)
         sessao.shouldOptimizeForNetworkUse = true
+        // AVAssetExportSession NÃO copia metadados automaticamente — sem isto, o
+        // .mp4 exportado perde a data de criação embutida no container (distinto
+        // da data do ARQUIVO, que é ajustada depois via coordenarMovimento).
+        sessao.metadata = avAsset.metadata
 
         // 3. Exporta de forma assíncrona (API compatível com iOS 16+).
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
@@ -510,7 +515,7 @@ actor PhotoSyncEngine {
 
     /// Grava um bloco de `Data` no destino final com escrita coordenada
     /// (reutiliza `coordenarMovimento` a partir de um arquivo temporário).
-    private func gravarDados(_ dados: Data, em destinoFinal: URL, nomeTemp: String) throws {
+    private func gravarDados(_ dados: Data, em destinoFinal: URL, nomeTemp: String, dataOriginal: Date?) throws {
         let tempURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString + "_" + nomeTemp)
         do {
@@ -518,7 +523,7 @@ actor PhotoSyncEngine {
         } catch {
             throw Self.mapearErroDeEscrita(error, nomeArquivo: destinoFinal.lastPathComponent)
         }
-        try coordenarMovimento(de: tempURL, para: destinoFinal)
+        try coordenarMovimento(de: tempURL, para: destinoFinal, dataOriginal: dataOriginal)
     }
 
     /// Deriva o nome-base (sem extensão) de um asset a partir do nome de arquivo
@@ -567,7 +572,13 @@ actor PhotoSyncEngine {
 
     /// Move um arquivo para o destino usando `NSFileCoordinator`,
     /// garantindo uma escrita coordenada e thread-safe da pasta de backup.
-    private func coordenarMovimento(de origem: URL, para destinoFinal: URL) throws {
+    ///
+    /// - Parameter dataOriginal: data de criação da FOTO/VÍDEO (`PHAsset.creationDate`),
+    ///   aplicada ao arquivo final para que ele fique com a data em que a mídia foi
+    ///   tirada — não com a data em que o backup foi executado. Sem isso, o arquivo
+    ///   herda a data "agora" do momento da gravação em disco (comportamento padrão
+    ///   do sistema de arquivos).
+    private func coordenarMovimento(de origem: URL, para destinoFinal: URL, dataOriginal: Date?) throws {
         let coordinator = NSFileCoordinator()
         var erroCoord: NSError?
         var erroInterno: Error?
@@ -583,6 +594,14 @@ actor PhotoSyncEngine {
                 // Move o temporário para a pasta de destino. Se algo já existir,
                 // já teríamos retornado antes (checagem de existência).
                 try fm.moveItem(at: origem, to: urlCoordenada)
+                // Aplica a data original da mídia (best-effort: se falhar, o backup
+                // do arquivo em si já foi concluído com sucesso, então não abortamos).
+                if let dataOriginal {
+                    try? fm.setAttributes(
+                        [.creationDate: dataOriginal, .modificationDate: dataOriginal],
+                        ofItemAtPath: urlCoordenada.path
+                    )
+                }
             } catch {
                 erroInterno = error
             }
