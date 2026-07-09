@@ -206,6 +206,26 @@ final class SyncViewModel: ObservableObject {
         return url.lastPathComponent
     }
 
+    /// Reseta o livro-razão, fazendo a PRÓXIMA sincronização reprocessar TODOS os
+    /// assets da galeria — inclusive os já enviados antes.
+    ///
+    /// Uso típico: você quer refazer o backup do zero (ex.: para aplicar a
+    /// correções/formatos atuais a fotos já enviadas por uma versão antiga do
+    /// app). Isto NÃO apaga nenhum arquivo sozinho — é responsabilidade sua já
+    /// ter apagado os arquivos antigos da pasta de destino ANTES de chamar isto;
+    /// caso contrário, o motor vê que o arquivo já existe e simplesmente pula,
+    /// sem reexportar nem corrigir nada.
+    ///
+    /// - Throws: erro se não conseguir persistir o livro-razão vazio.
+    func refazerBackupCompleto() async throws {
+        try await tracker.resetar()
+        defaults.removeObject(forKey: SyncConfig.DefaultsKey.lastSyncDate)
+        var novoStats = stats
+        novoStats.ultimaSync = nil
+        stats = novoStats
+        await refreshCounts()
+    }
+
     /// Caminho amigável exibido nas Configurações (apenas informativo).
     /// Mostra a pasta externa escolhida, se houver; senão, o caminho local
     /// visível no app Arquivos: No meu iPhone ▸ iAmaury ▸ <nome>.

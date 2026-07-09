@@ -128,4 +128,25 @@ actor PhotoTracker {
     var todosOsIDs: Set<String> {
         syncedIDs
     }
+
+    /// Esvazia o livro-razão por completo, fazendo a PRÓXIMA sincronização tratar
+    /// TODOS os assets da galeria como pendentes novamente (reprocessa tudo).
+    ///
+    /// Uso típico: o usuário apagou manualmente os arquivos da pasta de backup
+    /// (ex.: para corrigir algo, como datas erradas de uma versão antiga do app)
+    /// e quer refazer o backup do zero, já que o motor normalmente PULA qualquer
+    /// asset já marcado aqui — apagar só a pasta, sem resetar isto, deixaria a
+    /// pasta vazia para sempre.
+    ///
+    /// - Throws: `SyncError.escritaFalhou` caso não consiga persistir o ledger vazio.
+    func resetar() throws {
+        let anterior = syncedIDs
+        syncedIDs = []
+        do {
+            try save()
+        } catch {
+            syncedIDs = anterior
+            throw SyncError.escritaFalhou(motivo: "reset do livro-razão: \(error.localizedDescription)")
+        }
+    }
 }

@@ -30,6 +30,15 @@ struct SettingsView: View {
     /// Mensagem de erro do seletor de pasta, se algo der errado.
     @State private var erroPicker: String?
 
+    /// Controla o alerta de confirmação do "Refazer backup completo".
+    @State private var mostrandoConfirmacaoReset = false
+
+    /// `true` enquanto o reset do livro-razão está em andamento.
+    @State private var resetando = false
+
+    /// Erro do reset, se algo der errado.
+    @State private var erroReset: String?
+
     var body: some View {
         NavigationStack {
             Form {
@@ -111,6 +120,37 @@ struct SettingsView: View {
                     Text("O backup é estritamente unidirecional. Fotos apagadas da galeria "
                         + "continuam preservadas na pasta de backup.")
                 }
+
+                Section {
+                    Button(role: .destructive) {
+                        mostrandoConfirmacaoReset = true
+                    } label: {
+                        if resetando {
+                            HStack {
+                                ProgressView()
+                                Text("Reprocessando…")
+                            }
+                        } else {
+                            Text("Refazer backup completo")
+                        }
+                    }
+                    .disabled(resetando)
+
+                    if let erroReset {
+                        Text(erroReset)
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                    }
+                } header: {
+                    Text("Avançado")
+                } footer: {
+                    Text("Esvazia o controle interno de \"já enviados\", fazendo o próximo "
+                        + "\"Sincronizar Agora\" reprocessar TODA a galeria — inclusive fotos já "
+                        + "copiadas antes. Use isto DEPOIS de apagar manualmente os arquivos "
+                        + "antigos da pasta de destino (pelo app Arquivos); caso contrário, os "
+                        + "arquivos antigos são apenas ignorados, sem correção. Pode demorar e "
+                        + "usar dados/bateria em bibliotecas grandes.")
+                }
             }
             .navigationTitle("Configurações")
             .navigationBarTitleDisplayMode(.inline)
@@ -147,6 +187,25 @@ struct SettingsView: View {
                 case .failure(let error):
                     erroPicker = error.localizedDescription
                 }
+            }
+            .alert("Refazer backup completo?", isPresented: $mostrandoConfirmacaoReset) {
+                Button("Cancelar", role: .cancel) {}
+                Button("Refazer tudo", role: .destructive) {
+                    Task {
+                        resetando = true
+                        erroReset = nil
+                        do {
+                            try await vm.refazerBackupCompleto()
+                        } catch {
+                            erroReset = "Não foi possível resetar o livro-razão. Tente novamente."
+                        }
+                        resetando = false
+                    }
+                }
+            } message: {
+                Text("Isto NÃO apaga nenhuma foto ou arquivo. Só faz o app esquecer o que já "
+                    + "enviou, para reprocessar tudo na próxima sincronização. Apague antes os "
+                    + "arquivos antigos da pasta de destino, senão eles apenas serão ignorados.")
             }
         }
     }
