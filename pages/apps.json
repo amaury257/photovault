@@ -8,14 +8,14 @@
       "bundleIdentifier": "com.photovault.PhotoVault",
       "developerName": "amaury257",
       "subtitle": "Backup unidirecional das fotos para a pasta que você escolher",
-      "version": "1.0.13",
+      "version": "1.0.14",
       "versionDate": "2026-07-10",
-      "versionDescription": "Build automática 13.",
+      "versionDescription": "Build automática 14.",
       "downloadURL": "https://raw.githubusercontent.com/amaury257/photovault/main/pages/PhotoVault.ipa",
       "localizedDescription": "Faz backup unidirecional de todas as fotos e vídeos da galeria para uma pasta de destino escolhida por você (pode ser dentro do iCloud Drive) ou, se nenhuma for escolhida, para uma pasta local visível no app Arquivos (No meu iPhone / iAmaury). Apagar da galeria não remove do backup.",
       "iconURL": "https://raw.githubusercontent.com/amaury257/photovault/main/assets/icon.png",
       "tintColor": "FF9500",
-      "size": 3570679,
+      "size": 3523077,
       "screenshotURLs": []
     }
   ]
