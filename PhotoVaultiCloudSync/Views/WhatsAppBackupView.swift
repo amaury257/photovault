@@ -18,10 +18,21 @@ import UniformTypeIdentifiers
 
 struct WhatsAppBackupView: View {
 
+    /// Qual pasta o seletor de Arquivos está sendo aberto para escolher.
+    ///
+    /// Usar UM único seletor com um "alvo" (em vez de dois `.fileImporter`
+    /// separados empilhados na mesma view) evita uma instabilidade conhecida
+    /// do SwiftUI: múltiplos modificadores de apresentação do mesmo tipo
+    /// anexados à mesma view podem fazer só o primeiro (ou nenhum) funcionar.
+    private enum AlvoPicker: Identifiable {
+        case origem
+        case destino
+        var id: Self { self }
+    }
+
     @StateObject private var vm = WhatsAppSyncViewModel()
 
-    @State private var mostrandoPickerOrigem = false
-    @State private var mostrandoPickerDestino = false
+    @State private var alvoPicker: AlvoPicker?
     @State private var erro: String?
     @State private var mostrandoConfirmacaoReset = false
     @State private var resetando = false
@@ -36,7 +47,7 @@ struct WhatsAppBackupView: View {
                         .foregroundStyle(.secondary)
                 }
                 Button("Escolher pasta de origem...") {
-                    mostrandoPickerOrigem = true
+                    alvoPicker = .origem
                 }
             } header: {
                 Text("De onde ler (WhatsApp)")
@@ -54,7 +65,7 @@ struct WhatsAppBackupView: View {
                         .foregroundStyle(.secondary)
                 }
                 Button("Escolher pasta de destino...") {
-                    mostrandoPickerDestino = true
+                    alvoPicker = .destino
                 }
             } header: {
                 Text("Para onde copiar")
@@ -143,36 +154,29 @@ struct WhatsAppBackupView: View {
             await vm.atualizarContagem()
         }
         .fileImporter(
-            isPresented: $mostrandoPickerOrigem,
+            isPresented: Binding(
+                get: { alvoPicker != nil },
+                set: { novoValor in if !novoValor { alvoPicker = nil } }
+            ),
             allowedContentTypes: [.folder],
             allowsMultipleSelection: false
         ) { resultado in
+            let alvo = alvoPicker
             switch resultado {
             case .success(let urls):
                 guard let url = urls.first else { return }
                 do {
-                    try vm.escolherOrigem(url)
+                    switch alvo {
+                    case .origem:
+                        try vm.escolherOrigem(url)
+                    case .destino:
+                        try vm.escolherDestino(url)
+                    case nil:
+                        break
+                    }
                     erro = nil
                 } catch {
-                    erro = "Não foi possível usar essa pasta como origem. Tente novamente."
-                }
-            case .failure(let error):
-                erro = error.localizedDescription
-            }
-        }
-        .fileImporter(
-            isPresented: $mostrandoPickerDestino,
-            allowedContentTypes: [.folder],
-            allowsMultipleSelection: false
-        ) { resultado in
-            switch resultado {
-            case .success(let urls):
-                guard let url = urls.first else { return }
-                do {
-                    try vm.escolherDestino(url)
-                    erro = nil
-                } catch {
-                    erro = "Não foi possível usar essa pasta como destino. Tente novamente."
+                    erro = "Não foi possível usar essa pasta. Tente novamente."
                 }
             case .failure(let error):
                 erro = error.localizedDescription
