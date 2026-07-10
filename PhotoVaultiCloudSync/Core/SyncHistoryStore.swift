@@ -7,9 +7,12 @@
 //  Histórico. Independente dos livros-razão (que controlam o QUE já foi
 //  copiado): isto é só um LOG do que aconteceu em cada execução, para consulta.
 //
-//  Compartilhado (`shared`) porque é alimentado a partir de três lugares
-//  diferentes: o `SyncViewModel`, o `WhatsAppSyncViewModel` e o
-//  `BackgroundSyncManager` — todos precisam ver o mesmo histórico.
+//  Compartilhado (`shared`) porque é alimentado a partir de mais de um lugar:
+//  o `SyncViewModel` e o `BackgroundSyncManager` — ambos precisam ver o mesmo
+//  histórico. `HistoricoEntry.Tipo.whatsApp` é mantido só para não quebrar a
+//  decodificação de entradas antigas já persistidas no aparelho do usuário
+//  (a funcionalidade de backup do WhatsApp por seletor de pasta foi removida
+//  — ver `WhatsAppBackupView`).
 //
 
 import Foundation

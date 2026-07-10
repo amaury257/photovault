@@ -234,11 +234,11 @@ struct ContentView: View {
         .disabled(vm.status.estaSincronizando)
     }
 
-    // MARK: - Backup do WhatsApp (funcionalidade separada)
+    // MARK: - Backup do WhatsApp (tela informativa)
 
-    /// Leva à tela dedicada de backup de mídia do WhatsApp — uma
-    /// funcionalidade independente, com sua própria pasta de origem/destino
-    /// e livro-razão (não compartilha nada com o backup de fotos acima).
+    /// Leva à tela que explica por que não há um seletor de pasta do WhatsApp
+    /// (o iOS não expõe essa pasta a apps de terceiros) e como obter o mesmo
+    /// resultado via "Salvar no Álbum da Câmera" + o backup de fotos acima.
     private var linkBackupWhatsApp: some View {
         NavigationLink {
             WhatsAppBackupView()
