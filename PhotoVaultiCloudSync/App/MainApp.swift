@@ -34,6 +34,10 @@ struct PhotoVaultApp: App {
                     // os contadores. Erros de permissão são refletidos na própria UI
                     // quando o usuário tocar em "Sincronizar Agora".
                     await viewModel.refreshCounts()
+                    // Autorização de notificações locais (avisa conclusão do backup,
+                    // essencial para as execuções em background). Falha silenciosa
+                    // se o usuário negar — não afeta o backup em si.
+                    await NotificationManager.shared.requestAuthorization()
                 }
         }
         .onChange(of: scenePhase) { novaFase in

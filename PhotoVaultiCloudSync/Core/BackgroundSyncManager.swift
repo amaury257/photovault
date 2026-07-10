@@ -140,12 +140,30 @@ final class BackgroundSyncManager {
         // caso o sistema sinalize expiração do tempo disponível.
         let trabalho = Task { [engine, folderName, formato, log] in
             do {
-                let enviados = try await engine.sync(folderName: folderName, formato: formato)
+                let resultado = try await engine.sync(folderName: folderName, formato: formato)
                 // Registra a data da última sync bem-sucedida.
                 UserDefaults.standard.set(Date(), forKey: SyncConfig.DefaultsKey.lastSyncDate)
-                log.info("Backup em background concluído. Novos itens: \(enviados, privacy: .public)")
+                log.info("""
+                    Backup em background concluído. Enviados: \(resultado.enviados, privacy: .public), \
+                    falhas: \(resultado.falhas, privacy: .public)
+                    """)
+                await SyncHistoryStore.shared.registrar(HistoricoEntry(
+                    tipo: .fotos, data: Date(),
+                    enviados: resultado.enviados, falhas: resultado.falhas
+                ))
+                await NotificationManager.shared.notificarConclusao(tipo: .fotos, resultado: resultado)
                 task.setTaskCompleted(success: true)
             } catch is CancellationError {
+                task.setTaskCompleted(success: false)
+            } catch let erro as SyncError {
+                log.error("Backup em background falhou: \(erro.localizedDescription, privacy: .public)")
+                await SyncHistoryStore.shared.registrar(HistoricoEntry(
+                    tipo: .fotos, data: Date(), enviados: 0, falhas: 0,
+                    erroGeral: erro.errorDescription
+                ))
+                await NotificationManager.shared.notificarFalha(
+                    tipo: .fotos, mensagem: erro.errorDescription ?? "Erro desconhecido."
+                )
                 task.setTaskCompleted(success: false)
             } catch {
                 log.error("Backup em background falhou: \(error.localizedDescription, privacy: .public)")

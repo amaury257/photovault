@@ -109,6 +109,66 @@ struct SyncStats: Equatable {
     var ultimaSync: Date? = nil
 }
 
+// MARK: - Resultado de uma sincronização
+
+/// Resultado de uma execução do motor: quantos itens foram efetivamente
+/// copiados e quantos falharam. Uma falha em UM item nunca aborta os demais
+/// — o motor segue tentando o resto e reporta a contagem no final.
+struct ResultadoSync: Equatable {
+    var enviados: Int = 0
+    var falhas: Int = 0
+}
+
+// MARK: - Histórico de sincronizações
+
+/// Um registro do histórico de sincronizações (fotos ou WhatsApp), para a
+/// tela de Histórico. Guardado localmente, sem relação com o livro-razão
+/// (que controla o QUE já foi copiado; isto só guarda um LOG do que aconteceu
+/// em cada execução, para consulta).
+struct HistoricoEntry: Codable, Identifiable, Equatable {
+    enum Tipo: String, Codable {
+        case fotos
+        case whatsApp
+    }
+
+    var id = UUID()
+    var tipo: Tipo
+    var data: Date
+    var enviados: Int
+    var falhas: Int
+    /// Preenchido apenas quando a sincronização falhou POR COMPLETO (ex.:
+    /// permissão negada, pasta inacessível) — não por falha de itens
+    /// individuais, que já é refletida em `falhas`.
+    var erroGeral: String?
+}
+
+// MARK: - Múltiplas pastas de origem (WhatsApp)
+
+/// Referência resolvível (via bookmark de segurança) a UMA pasta de origem do
+/// backup do WhatsApp, repassada ao motor. Uma sincronização pode ter várias
+/// pastas de origem — todas lidas, nenhuma nunca escrita/apagada.
+///
+/// `semNamespace` preserva a compatibilidade da ORIGEM ÚNICA de versões
+/// anteriores ao suporte a múltiplas pastas: sem isso, os arquivos já
+/// copiados por essa origem seriam vistos como "pendentes" de novo na
+/// primeira sincronização após a atualização (chave do livro-razão e nome do
+/// arquivo de destino mudariam), duplicando tudo. Novas origens adicionadas
+/// depois usam namespace (derivado do próprio caminho, estável mesmo se
+/// outras origens forem removidas/reordenadas).
+struct WhatsAppOrigemBookmark: Sendable, Equatable {
+    var bookmark: Data
+    var semNamespace: Bool
+}
+
+/// Uma pasta de origem configurada pelo usuário para o backup do WhatsApp —
+/// modelo persistido (JSON em UserDefaults) e exibido na UI.
+struct WhatsAppOrigemConfig: Codable, Identifiable, Equatable {
+    var id = UUID()
+    var bookmark: Data
+    var nome: String
+    var semNamespace: Bool = false
+}
+
 // MARK: - Formato de exportação
 
 /// Formato em que as mídias são gravadas na pasta de backup.
@@ -181,8 +241,12 @@ enum SyncConfig {
         static let destinationBookmark = "pv.destinationBookmarkData"
 
         // ---- Backup do WhatsApp (funcionalidade separada) ----
-        /// Bookmark de segurança da pasta de ORIGEM (ex.: WhatsApp ▸ Media).
+        /// Bookmark de segurança da pasta de ORIGEM única (ex.: WhatsApp ▸ Media).
+        /// Mantida só para MIGRAÇÃO — versões atuais usam `whatsAppOrigens`
+        /// (lista de pastas). Ver `WhatsAppSyncViewModel.init`.
         static let whatsAppSourceBookmark = "wa.sourceBookmarkData"
+        /// Lista de pastas de origem (JSON de `[WhatsAppOrigemConfig]`).
+        static let whatsAppOrigens = "wa.origens"
         /// Bookmark de segurança da pasta de DESTINO do backup do WhatsApp.
         static let whatsAppDestinationBookmark = "wa.destinationBookmarkData"
         static let whatsAppLastSyncDate = "wa.lastSyncDate"

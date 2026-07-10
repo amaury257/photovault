@@ -4,7 +4,12 @@
 //
 //  ViewModel do backup de mídia do WhatsApp — funcionalidade SEPARADA do
 //  backup de fotos da galeria, com motor, livro-razão e pastas de
-//  origem/destino próprios. Só roda manualmente (sem tarefa em background).
+//  origem/destino próprios. Só roda manualmente (sem tarefa em background,
+//  por escolha explícita do usuário).
+//
+//  Suporta MÚLTIPLAS pastas de origem (ex.: "WhatsApp Images" e "WhatsApp
+//  Video" separadamente) — o WhatsApp não permite filtrar por conversa, então
+//  isto é o mais próximo de um "filtro" que o app pode oferecer.
 //
 //  Marcado `@MainActor`: todas as propriedades `@Published` são atualizadas
 //  na thread principal.
@@ -19,10 +24,14 @@ final class WhatsAppSyncViewModel: ObservableObject {
     // MARK: - Estado publicado
 
     @Published private(set) var status: SyncStatus = .idle
-    @Published private(set) var origemNome: String?
+    @Published private(set) var origens: [WhatsAppOrigemConfig] = []
     @Published private(set) var destinoNome: String?
     @Published private(set) var totalCopiados: Int = 0
     @Published private(set) var ultimaSync: Date?
+
+    /// Resultado (enviados/falhas) da última execução — para exibir a
+    /// contagem de falhas sem misturar isso ao `SyncStatus`.
+    @Published private(set) var ultimoResultado: ResultadoSync?
 
     // MARK: - Dependências (próprias — não compartilhadas com o backup de fotos)
 
@@ -40,17 +49,44 @@ final class WhatsAppSyncViewModel: ObservableObject {
 
         self.ultimaSync = defaults.object(forKey: SyncConfig.DefaultsKey.whatsAppLastSyncDate) as? Date
 
-        if let data = defaults.data(forKey: SyncConfig.DefaultsKey.whatsAppSourceBookmark) {
-            self.origemNome = Self.nomeAmigavel(deBookmark: data)
-        }
+        self.origens = Self.carregarOrigens(defaults: defaults)
+
         if let data = defaults.data(forKey: SyncConfig.DefaultsKey.whatsAppDestinationBookmark) {
-            self.destinoNome = Self.nomeAmigavel(deBookmark: data)
+            self.destinoNome = SecurityScopedBookmark.nomeAmigavel(deBookmark: data)
         }
     }
 
-    /// `true` quando origem e destino já foram escolhidos e nenhuma sync está rolando.
+    /// `true` quando ao menos uma origem e o destino já foram escolhidos e
+    /// nenhuma sync está rolando.
     var podeSincronizar: Bool {
-        origemNome != nil && destinoNome != nil && !status.estaSincronizando
+        !origens.isEmpty && destinoNome != nil && !status.estaSincronizando
+    }
+
+    // MARK: - Carregamento / migração das origens
+
+    /// Carrega a lista de origens persistida. Se não houver nenhuma lista
+    /// salva mas existir o bookmark ÚNICO de versões anteriores ao suporte a
+    /// múltiplas pastas, migra automaticamente — preservando `semNamespace`
+    /// para não duplicar arquivos já copiados por essa origem.
+    private static func carregarOrigens(defaults: UserDefaults) -> [WhatsAppOrigemConfig] {
+        if let dados = defaults.data(forKey: SyncConfig.DefaultsKey.whatsAppOrigens),
+           let lista = try? JSONDecoder().decode([WhatsAppOrigemConfig].self, from: dados) {
+            return lista
+        }
+
+        guard let bookmarkAntigo = defaults.data(forKey: SyncConfig.DefaultsKey.whatsAppSourceBookmark) else {
+            return []
+        }
+
+        let nome = SecurityScopedBookmark.nomeAmigavel(deBookmark: bookmarkAntigo) ?? "Pasta de origem"
+        let origemMigrada = WhatsAppOrigemConfig(bookmark: bookmarkAntigo, nome: nome, semNamespace: true)
+        persistirOrigens([origemMigrada], defaults: defaults)
+        return [origemMigrada]
+    }
+
+    private static func persistirOrigens(_ lista: [WhatsAppOrigemConfig], defaults: UserDefaults) {
+        guard let dados = try? JSONEncoder().encode(lista) else { return }
+        defaults.set(dados, forKey: SyncConfig.DefaultsKey.whatsAppOrigens)
     }
 
     // MARK: - Ações
@@ -60,33 +96,37 @@ final class WhatsAppSyncViewModel: ObservableObject {
         totalCopiados = await tracker.syncedCount
     }
 
-    /// Persiste a pasta de ORIGEM (ex.: WhatsApp ▸ Media) via bookmark de segurança.
-    func escolherOrigem(_ url: URL) throws {
-        guard url.startAccessingSecurityScopedResource() else {
-            throw SyncError.pastaExternaInacessivel
-        }
-        defer { url.stopAccessingSecurityScopedResource() }
-        let bookmark = try url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
-        defaults.set(bookmark, forKey: SyncConfig.DefaultsKey.whatsAppSourceBookmark)
-        origemNome = url.lastPathComponent
+    /// Adiciona uma nova pasta de origem (ex.: WhatsApp ▸ Media) a partir de
+    /// um bookmark JÁ CRIADO pela View (ver aviso em `SecurityScopedBookmark`
+    /// sobre criar o bookmark imediatamente ao receber a URL do
+    /// `.fileImporter`). Origens novas sempre usam namespace — não há risco
+    /// de duplicar backup já existente, pois nunca foram sincronizadas antes.
+    func adicionarOrigem(bookmark: Data, nome: String) {
+        // Evita adicionar a mesma pasta duas vezes.
+        guard !origens.contains(where: { $0.bookmark == bookmark }) else { return }
+        let nova = WhatsAppOrigemConfig(bookmark: bookmark, nome: nome, semNamespace: false)
+        origens.append(nova)
+        Self.persistirOrigens(origens, defaults: defaults)
     }
 
-    /// Persiste a pasta de DESTINO via bookmark de segurança.
-    func escolherDestino(_ url: URL) throws {
-        guard url.startAccessingSecurityScopedResource() else {
-            throw SyncError.pastaExternaInacessivel
-        }
-        defer { url.stopAccessingSecurityScopedResource() }
-        let bookmark = try url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
+    /// Remove uma pasta de origem da lista (não apaga nenhum arquivo já
+    /// copiado — só faz o app parar de ler dessa pasta nas próximas sincronizações).
+    func removerOrigem(_ origem: WhatsAppOrigemConfig) {
+        origens.removeAll { $0.id == origem.id }
+        Self.persistirOrigens(origens, defaults: defaults)
+    }
+
+    /// Aplica a pasta de DESTINO a partir de um bookmark já criado pela View.
+    func aplicarNovoDestino(bookmark: Data, nome: String) {
         defaults.set(bookmark, forKey: SyncConfig.DefaultsKey.whatsAppDestinationBookmark)
-        destinoNome = url.lastPathComponent
+        destinoNome = nome
     }
 
     /// Dispara a sincronização manual ("Sincronizar WhatsApp Agora").
     func syncNow() async {
         guard !status.estaSincronizando else { return }
         guard
-            let origemData = defaults.data(forKey: SyncConfig.DefaultsKey.whatsAppSourceBookmark),
+            !origens.isEmpty,
             let destinoData = defaults.data(forKey: SyncConfig.DefaultsKey.whatsAppDestinationBookmark)
         else {
             status = .failed(SyncError.pastasNaoConfiguradas.errorDescription ?? "")
@@ -95,9 +135,13 @@ final class WhatsAppSyncViewModel: ObservableObject {
 
         status = .syncing(enviados: 0, total: 0)
 
+        let origensBookmarks = origens.map {
+            WhatsAppOrigemBookmark(bookmark: $0.bookmark, semNamespace: $0.semNamespace)
+        }
+
         do {
-            try await engine.sync(
-                origemBookmark: origemData,
+            let resultado = try await engine.sync(
+                origens: origensBookmarks,
                 destinoBookmark: destinoData
             ) { [weak self] feitos, total in
                 Task { @MainActor in
@@ -109,9 +153,23 @@ final class WhatsAppSyncViewModel: ObservableObject {
             defaults.set(agora, forKey: SyncConfig.DefaultsKey.whatsAppLastSyncDate)
             ultimaSync = agora
             totalCopiados = await tracker.syncedCount
+            ultimoResultado = resultado
             status = .completed(agora)
+
+            await SyncHistoryStore.shared.registrar(HistoricoEntry(
+                tipo: .whatsApp, data: agora,
+                enviados: resultado.enviados, falhas: resultado.falhas
+            ))
+            await NotificationManager.shared.notificarConclusao(tipo: .whatsApp, resultado: resultado)
         } catch let erro as SyncError {
             status = .failed(erro.errorDescription ?? "Erro desconhecido.")
+            await SyncHistoryStore.shared.registrar(HistoricoEntry(
+                tipo: .whatsApp, data: Date(), enviados: 0, falhas: 0,
+                erroGeral: erro.errorDescription
+            ))
+            await NotificationManager.shared.notificarFalha(
+                tipo: .whatsApp, mensagem: erro.errorDescription ?? "Erro desconhecido."
+            )
         } catch {
             status = .failed(error.localizedDescription)
         }
@@ -125,18 +183,21 @@ final class WhatsAppSyncViewModel: ObservableObject {
         await atualizarContagem()
     }
 
-    // MARK: - Auxiliares
+    // MARK: - Informações de armazenamento (sob demanda)
 
-    private static func nomeAmigavel(deBookmark bookmarkData: Data) -> String? {
-        var estaDesatualizado = false
-        guard let url = try? URL(
-            resolvingBookmarkData: bookmarkData,
-            options: [],
-            relativeTo: nil,
-            bookmarkDataIsStale: &estaDesatualizado
-        ) else {
-            return nil
+    /// Espaço livre (em bytes) no volume da pasta de destino atual.
+    func espacoLivreDestino() async throws -> Int64 {
+        guard let destinoData = defaults.data(forKey: SyncConfig.DefaultsKey.whatsAppDestinationBookmark) else {
+            throw SyncError.pastasNaoConfiguradas
         }
-        return url.lastPathComponent
+        return try await engine.espacoLivreDestino(destinoBookmark: destinoData)
+    }
+
+    /// Tamanho total (em bytes) já ocupado pela pasta de backup do WhatsApp.
+    func tamanhoTotalBackup() async throws -> Int64 {
+        guard let destinoData = defaults.data(forKey: SyncConfig.DefaultsKey.whatsAppDestinationBookmark) else {
+            throw SyncError.pastasNaoConfiguradas
+        }
+        return try await engine.tamanhoTotalBackup(destinoBookmark: destinoData)
     }
 }

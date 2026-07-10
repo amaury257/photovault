@@ -37,6 +37,7 @@ struct ContentView: View {
                     grupoContadores
                     botaoSincronizar
                     linkBackupWhatsApp
+                    linkHistorico
                     rodapeInformativo
                     versaoLabel
                 }
@@ -152,6 +153,15 @@ struct ContentView: View {
                     .foregroundStyle(.red)
                     .multilineTextAlignment(.center)
             }
+
+            // Contagem de falhas por item da última execução (não abortam o
+            // backup — só ficam pendentes para a próxima tentativa).
+            if case .completed = vm.status, let resultado = vm.ultimoResultado, resultado.falhas > 0 {
+                Text("\(resultado.falhas) item(ns) falharam e serão tentados na próxima sincronização.")
+                    .font(.footnote)
+                    .foregroundStyle(.orange)
+                    .multilineTextAlignment(.center)
+            }
         }
         .frame(maxWidth: .infinity)
         .padding(24)
@@ -239,6 +249,30 @@ struct ContentView: View {
                     .foregroundStyle(.green)
                     .frame(width: 28)
                 Text("Backup do WhatsApp")
+                    .foregroundStyle(.primary)
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
+        }
+        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    // MARK: - Histórico
+
+    private var linkHistorico: some View {
+        NavigationLink {
+            HistoryView()
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "clock.arrow.circlepath")
+                    .font(.title3)
+                    .foregroundStyle(.purple)
+                    .frame(width: 28)
+                Text("Histórico de sincronizações")
                     .foregroundStyle(.primary)
                 Spacer()
                 Image(systemName: "chevron.right")

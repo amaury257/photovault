@@ -39,6 +39,18 @@ struct SettingsView: View {
     /// Erro do reset, se algo der errado.
     @State private var erroReset: String?
 
+    /// Bookmark de uma nova pasta de destino já escolhida, aguardando
+    /// confirmação do usuário (só é pedida quando JÁ havia uma pasta externa
+    /// configurada — trocar de pasta local pra local não precisa de aviso).
+    @State private var destinoPendente: (bookmark: Data, nome: String)?
+    @State private var mostrandoConfirmacaoTrocaPasta = false
+
+    /// Espaço em disco (consultado sob demanda — pode ser lento).
+    @State private var espacoLivreTexto: String?
+    @State private var tamanhoBackupTexto: String?
+    @State private var carregandoEspaco = false
+    @State private var erroEspaco: String?
+
     var body: some View {
         NavigationStack {
             Form {
@@ -122,6 +134,37 @@ struct SettingsView: View {
                 }
 
                 Section {
+                    if let espacoLivreTexto {
+                        LabeledContent("Espaço livre no destino", value: espacoLivreTexto)
+                    }
+                    if let tamanhoBackupTexto {
+                        LabeledContent("Tamanho do backup", value: tamanhoBackupTexto)
+                    }
+                    Button {
+                        Task { await verificarEspaco() }
+                    } label: {
+                        if carregandoEspaco {
+                            HStack {
+                                ProgressView()
+                                Text("Calculando…")
+                            }
+                        } else {
+                            Text("Verificar espaço em disco")
+                        }
+                    }
+                    .disabled(carregandoEspaco)
+                    if let erroEspaco {
+                        Text(erroEspaco)
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                    }
+                } header: {
+                    Text("Armazenamento")
+                } footer: {
+                    Text("Calcular o tamanho do backup pode demorar em bibliotecas grandes.")
+                }
+
+                Section {
                     Button(role: .destructive) {
                         mostrandoConfirmacaoReset = true
                     } label: {
@@ -179,7 +222,16 @@ struct SettingsView: View {
                 case .success(let urls):
                     guard let url = urls.first else { return }
                     do {
-                        try vm.salvarPastaDestinoExterna(url)
+                        // Bookmark criado IMEDIATAMENTE — ver aviso em SecurityScopedBookmark
+                        // sobre a validade transitória da URL do .fileImporter.
+                        let (bookmark, nome) = try vm.criarBookmarkPastaDestino(url)
+                        if vm.destinoExternoNome != nil {
+                            // Já havia uma pasta externa: pede confirmação antes de trocar.
+                            destinoPendente = (bookmark, nome)
+                            mostrandoConfirmacaoTrocaPasta = true
+                        } else {
+                            vm.aplicarPastaDestinoExterna(bookmark: bookmark, nome: nome)
+                        }
                         erroPicker = nil
                     } catch {
                         erroPicker = "Não foi possível usar essa pasta. Tente escolher novamente."
@@ -187,6 +239,18 @@ struct SettingsView: View {
                 case .failure(let error):
                     erroPicker = error.localizedDescription
                 }
+            }
+            .alert("Trocar pasta de destino?", isPresented: $mostrandoConfirmacaoTrocaPasta) {
+                Button("Cancelar", role: .cancel) { destinoPendente = nil }
+                Button("Trocar") {
+                    if let destinoPendente {
+                        vm.aplicarPastaDestinoExterna(bookmark: destinoPendente.bookmark, nome: destinoPendente.nome)
+                    }
+                    destinoPendente = nil
+                }
+            } message: {
+                Text("Os arquivos já enviados para \"\(vm.destinoExternoNome ?? "")\" permanecem lá. "
+                    + "A partir de agora, os novos backups vão para \"\(destinoPendente?.nome ?? "")\".")
             }
             .alert("Refazer backup completo?", isPresented: $mostrandoConfirmacaoReset) {
                 Button("Cancelar", role: .cancel) {}
@@ -211,6 +275,23 @@ struct SettingsView: View {
     }
 
     // MARK: - Auxiliares
+
+    private func verificarEspaco() async {
+        carregandoEspaco = true
+        erroEspaco = nil
+        do {
+            async let livre = vm.espacoLivreDestino()
+            async let total = vm.tamanhoTotalBackup()
+            let (livreBytes, totalBytes) = try await (livre, total)
+            espacoLivreTexto = StorageInfo.formatar(livreBytes)
+            tamanhoBackupTexto = StorageInfo.formatar(totalBytes)
+        } catch let erroSync as SyncError {
+            erroEspaco = erroSync.errorDescription
+        } catch {
+            erroEspaco = error.localizedDescription
+        }
+        carregandoEspaco = false
+    }
 
     /// Nome sem espaços nas pontas — usado para validar o botão "Salvar".
     private var nomeSanitizado: String {

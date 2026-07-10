@@ -85,57 +85,108 @@ actor WhatsAppSyncEngine {
         return String(format: "%08x", hash)
     }
 
+    // MARK: - Informações de armazenamento
+
+    /// Espaço livre (em bytes) no volume da pasta de destino atual.
+    func espacoLivreDestino(destinoBookmark: Data) throws -> Int64 {
+        let destino = try resolverBookmark(destinoBookmark)
+        guard destino.startAccessingSecurityScopedResource() else {
+            throw SyncError.pastaExternaInacessivel
+        }
+        defer { destino.stopAccessingSecurityScopedResource() }
+        return StorageInfo.espacoLivre(em: destino) ?? 0
+    }
+
+    /// Soma o tamanho (em bytes) de todos os arquivos já copiados para a
+    /// pasta de destino do WhatsApp. Pode ser lento em pastas grandes.
+    func tamanhoTotalBackup(destinoBookmark: Data) throws -> Int64 {
+        let destino = try resolverBookmark(destinoBookmark)
+        guard destino.startAccessingSecurityScopedResource() else {
+            throw SyncError.pastaExternaInacessivel
+        }
+        defer { destino.stopAccessingSecurityScopedResource() }
+        return StorageInfo.tamanhoTotal(em: destino)
+    }
+
     // MARK: - Execução principal
 
-    /// Copia todos os arquivos pendentes de `origemBookmark` para `destinoBookmark`.
+    /// Copia todos os arquivos pendentes de TODAS as pastas em `origens` para
+    /// `destinoBookmark`.
     ///
-    /// - Returns: número de arquivos efetivamente copiados nesta execução.
+    /// - Returns: `ResultadoSync` com a contagem de itens copiados e de falhas.
+    ///   Uma falha em UM arquivo não aborta os demais — só erros irrecuperáveis
+    ///   (pastas inacessíveis, cancelamento) lançam exceção.
     /// - Throws: `SyncError` em caso de falha irrecuperável (ex.: pastas inacessíveis).
     @discardableResult
     func sync(
-        origemBookmark: Data,
+        origens: [WhatsAppOrigemBookmark],
         destinoBookmark: Data,
         progresso: @Sendable (Int, Int) -> Void = { _, _ in }
-    ) async throws -> Int {
+    ) async throws -> ResultadoSync {
         resetarCancelamento()
         await tracker.load()
 
-        let origem = try resolverBookmark(origemBookmark)
+        guard !origens.isEmpty else {
+            throw SyncError.pastasNaoConfiguradas
+        }
+
+        let origensResolvidas = try origens.map {
+            (url: try resolverBookmark($0.bookmark), semNamespace: $0.semNamespace)
+        }
         let destino = try resolverBookmark(destinoBookmark)
 
-        guard origem.startAccessingSecurityScopedResource() else {
-            throw SyncError.pastaExternaInacessivel
+        // Abre o escopo de segurança de TODAS as origens antes de começar;
+        // se qualquer uma falhar, fecha as já abertas e aborta.
+        var origensAbertas: [URL] = []
+        for (url, _) in origensResolvidas {
+            guard url.startAccessingSecurityScopedResource() else {
+                for aberta in origensAbertas { aberta.stopAccessingSecurityScopedResource() }
+                throw SyncError.pastaExternaInacessivel
+            }
+            origensAbertas.append(url)
         }
-        defer { origem.stopAccessingSecurityScopedResource() }
+        defer { for aberta in origensAbertas { aberta.stopAccessingSecurityScopedResource() } }
 
         guard destino.startAccessingSecurityScopedResource() else {
             throw SyncError.pastaExternaInacessivel
         }
         defer { destino.stopAccessingSecurityScopedResource() }
 
-        // 1. Enumera a origem e monta a lista de pendentes (ainda não copiados).
-        let origemPath = origem.path
+        // 1. Enumera TODAS as origens e monta a lista de pendentes (ainda não
+        //    copiados). Cada origem contribui com seu próprio "namespace" no
+        //    caminho relativo, evitando colisão entre pastas de origem
+        //    diferentes que tenham arquivos com o mesmo nome/subcaminho — ver
+        //    doc de `WhatsAppOrigemBookmark.semNamespace`.
         var pendentes: [(url: URL, relativo: String, chave: String)] = []
 
-        for url in enumerarArquivos(em: origem) {
-            let caminhoCompleto = url.path
-            guard caminhoCompleto.hasPrefix(origemPath) else { continue }
-            let relativo = String(caminhoCompleto.dropFirst(origemPath.count))
-                .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-            guard !relativo.isEmpty else { continue }
+        for (origemURL, semNamespace) in origensResolvidas {
+            let origemPath = origemURL.path
+            let namespaceOrigem = semNamespace ? nil : Self.prefixoEstavel(para: origemPath)
 
-            let tamanho = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-            let chave = WhatsAppTracker.chave(caminhoRelativo: relativo, tamanho: tamanho)
+            for url in enumerarArquivos(em: origemURL) {
+                let caminhoCompleto = url.path
+                guard caminhoCompleto.hasPrefix(origemPath) else { continue }
+                let relativoBruto = String(caminhoCompleto.dropFirst(origemPath.count))
+                    .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                guard !relativoBruto.isEmpty else { continue }
 
-            let jaFeito = await tracker.isSynced(chave)
-            if !jaFeito {
-                pendentes.append((url, relativo, chave))
+                let relativo = namespaceOrigem.map { "\($0)_\(relativoBruto)" } ?? relativoBruto
+
+                let tamanho = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+                let chave = WhatsAppTracker.chave(caminhoRelativo: relativo, tamanho: tamanho)
+
+                let jaFeito = await tracker.isSynced(chave)
+                if !jaFeito {
+                    pendentes.append((url, relativo, chave))
+                }
             }
         }
 
         let total = pendentes.count
         var enviados = 0
-        progresso(enviados, total)
+        var falhas = 0
+        var processados = 0
+        progresso(processados, total)
 
         // 2. Copia cada arquivo pendente.
         for item in pendentes {
@@ -149,23 +200,25 @@ actor WhatsAppSyncEngine {
             if FileManager.default.fileExists(atPath: destinoFinal.path) {
                 try await tracker.markSynced(item.chave)
                 enviados += 1
-                progresso(enviados, total)
+                processados += 1
+                progresso(processados, total)
                 continue
             }
 
             do {
                 try copiarComCoordenacao(de: item.url, para: destinoFinal)
                 try await tracker.markSynced(item.chave)
+                enviados += 1
             } catch {
                 // Um arquivo problemático não aborta os demais — segue para o próximo.
-                continue
+                falhas += 1
             }
 
-            enviados += 1
-            progresso(enviados, total)
+            processados += 1
+            progresso(processados, total)
         }
 
-        return enviados
+        return ResultadoSync(enviados: enviados, falhas: falhas)
     }
 
     // MARK: - Cópia coordenada (origem: só leitura / destino: escrita)

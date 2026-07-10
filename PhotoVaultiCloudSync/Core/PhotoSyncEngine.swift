@@ -159,6 +159,31 @@ actor PhotoSyncEngine {
         return destino
     }
 
+    // MARK: - Informações de armazenamento
+
+    /// Espaço livre (em bytes) no volume da pasta de destino atual.
+    /// - Throws: `SyncError` se a pasta não puder ser resolvida/acessada.
+    func espacoLivreDestino(folderName: String) throws -> Int64 {
+        let destino = try resolverPastaDestino(folderName: folderName)
+        guard destino.startAccessingSecurityScopedResource() else {
+            throw SyncError.pastaExternaInacessivel
+        }
+        defer { destino.stopAccessingSecurityScopedResource() }
+        return StorageInfo.espacoLivre(em: destino) ?? 0
+    }
+
+    /// Soma o tamanho (em bytes) de todos os arquivos já copiados para a
+    /// pasta de destino. Pode ser lento em pastas grandes (enumera tudo) —
+    /// deve ser chamado sob demanda, não automaticamente.
+    func tamanhoTotalBackup(folderName: String) throws -> Int64 {
+        let destino = try resolverPastaDestino(folderName: folderName)
+        guard destino.startAccessingSecurityScopedResource() else {
+            throw SyncError.pastaExternaInacessivel
+        }
+        defer { destino.stopAccessingSecurityScopedResource() }
+        return StorageInfo.tamanhoTotal(em: destino)
+    }
+
     /// Remove caracteres inválidos e espaços das pontas do nome da pasta,
     /// caindo no nome padrão se o resultado ficar vazio.
     private static func sanitizarNomePasta(_ nome: String) -> String {
@@ -194,16 +219,18 @@ actor PhotoSyncEngine {
     /// - Parameters:
     ///   - folderName: nome da pasta de destino (dentro de Documents do app).
     ///   - formato: `.original` (dados brutos) ou `.compativel` (JPEG/MP4).
-    ///   - progresso: callback chamado a cada asset processado com
-    ///     `(enviadosNestaExecucao, totalPendente)`. Sempre invocado fora do actor.
-    /// - Returns: número de assets efetivamente copiados nesta execução.
-    /// - Throws: um `SyncError` em caso de falha irrecuperável.
+    ///   - progresso: callback chamado a cada asset PROCESSADO (sucesso ou
+    ///     falha) com `(processados, totalPendente)`. Sempre invocado fora do actor.
+    /// - Returns: `ResultadoSync` com a contagem de itens copiados e de falhas.
+    ///   Uma falha em um item NÃO aborta os demais — só erros irrecuperáveis
+    ///   (permissão negada, pasta inacessível, cancelamento) lançam exceção.
+    /// - Throws: um `SyncError` em caso de falha irrecuperável (pré-condições).
     @discardableResult
     func sync(
         folderName: String,
         formato: ExportFormat = SyncConfig.formatoPadrao,
         progresso: @Sendable (Int, Int) -> Void = { _, _ in }
-    ) async throws -> Int {
+    ) async throws -> ResultadoSync {
         resetarCancelamento()
 
         // 1. Garantias de pré-condição (permissão + pasta) antes de qualquer I/O.
@@ -237,23 +264,31 @@ actor PhotoSyncEngine {
 
         let total = pendentes.count
         var enviados = 0
-        progresso(enviados, total)
+        var falhas = 0
+        var processados = 0
+        progresso(processados, total)
 
-        // 3. Exporta cada asset pendente.
+        // 3. Exporta cada asset pendente. Uma falha em UM asset (ex.: foto
+        //    corrompida, download do iCloud falhou) não pode travar o backup
+        //    inteiro — registramos a falha e seguimos para o próximo.
         for asset in pendentes {
             // Cancelamento cooperativo (ex.: expiração da BG task).
             if cancelado { throw SyncError.cancelada }
 
-            try await exportarAsset(asset, para: destino, formato: formato)
+            do {
+                try await exportarAsset(asset, para: destino, formato: formato)
+                // Só marca no livro-razão APÓS a escrita coordenada bem-sucedida.
+                try await tracker.markSynced(asset.localIdentifier)
+                enviados += 1
+            } catch {
+                falhas += 1
+            }
 
-            // Só marca no livro-razão APÓS a escrita coordenada bem-sucedida.
-            try await tracker.markSynced(asset.localIdentifier)
-
-            enviados += 1
-            progresso(enviados, total)
+            processados += 1
+            progresso(processados, total)
         }
 
-        return enviados
+        return ResultadoSync(enviados: enviados, falhas: falhas)
     }
 
     // MARK: - Exportação de um asset (dispatcher por formato)

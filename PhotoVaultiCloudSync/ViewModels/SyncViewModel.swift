@@ -39,6 +39,10 @@ final class SyncViewModel: ObservableObject {
     /// e o backup usa a pasta local padrão do app.
     @Published private(set) var destinoExternoNome: String?
 
+    /// Resultado (enviados/falhas) da última execução — usado para exibir a
+    /// contagem de falhas no dashboard sem misturar isso ao `SyncStatus`.
+    @Published private(set) var ultimoResultado: ResultadoSync?
+
     // MARK: - Dependências
 
     private let engine: PhotoSyncEngine
@@ -72,7 +76,7 @@ final class SyncViewModel: ObservableObject {
         // Resolve (melhor esforço, só para exibição) o nome da pasta externa
         // já escolhida em uma sessão anterior, se houver.
         if let bookmarkData = defaults.data(forKey: SyncConfig.DefaultsKey.destinationBookmark) {
-            self.destinoExternoNome = Self.nomeAmigavel(deBookmark: bookmarkData)
+            self.destinoExternoNome = SecurityScopedBookmark.nomeAmigavel(deBookmark: bookmarkData)
         } else {
             self.destinoExternoNome = nil
         }
@@ -114,7 +118,7 @@ final class SyncViewModel: ObservableObject {
 
             // O callback de progresso vem de fora da MainActor; reencaminhamos ao
             // main para atualizar a UI com segurança.
-            let enviados = try await engine.sync(
+            let resultado = try await engine.sync(
                 folderName: folderName,
                 formato: exportFormat
             ) { [weak self] feitos, total in
@@ -132,10 +136,23 @@ final class SyncViewModel: ObservableObject {
             novoStats.totalNaGaleria = await engine.contarAssetsNaGaleria()
             stats = novoStats
 
+            ultimoResultado = resultado
             status = .completed(agora)
-            _ = enviados // (contador de novos itens desta execução, se quiser exibir)
+
+            await SyncHistoryStore.shared.registrar(HistoricoEntry(
+                tipo: .fotos, data: agora,
+                enviados: resultado.enviados, falhas: resultado.falhas
+            ))
+            await NotificationManager.shared.notificarConclusao(tipo: .fotos, resultado: resultado)
         } catch let erro as SyncError {
             status = .failed(erro.errorDescription ?? "Erro desconhecido.")
+            await SyncHistoryStore.shared.registrar(HistoricoEntry(
+                tipo: .fotos, data: Date(), enviados: 0, falhas: 0,
+                erroGeral: erro.errorDescription
+            ))
+            await NotificationManager.shared.notificarFalha(
+                tipo: .fotos, mensagem: erro.errorDescription ?? "Erro desconhecido."
+            )
         } catch {
             status = .failed(error.localizedDescription)
         }
@@ -163,25 +180,34 @@ final class SyncViewModel: ObservableObject {
         BackgroundSyncManager.shared.atualizarFormato(novoFormato)
     }
 
-    /// Persiste a pasta EXTERNA escolhida pelo usuário no seletor de Arquivos
-    /// (aceita pastas dentro do iCloud Drive ou qualquer outro provedor), via
-    /// *security-scoped bookmark* — necessário para reter o acesso entre
-    /// lançamentos do app e execuções em background.
+    /// Cria (sem persistir) o bookmark de segurança de uma pasta escolhida no
+    /// seletor de Arquivos. A View chama isto IMEDIATAMENTE ao receber a URL
+    /// do `.fileImporter` — antes de qualquer alerta de confirmação
+    /// assíncrono (ver aviso em `SecurityScopedBookmark`) — e só aplica com
+    /// `aplicarPastaDestinoExterna` depois que o usuário confirmar a troca.
     ///
-    /// A partir de agora, esta pasta passa a ter prioridade sobre a pasta local
-    /// (ver `PhotoSyncEngine.resolverPastaDestino`). Itens já enviados para a
+    /// - Throws: `SyncError.pastaExternaInacessivel` se o sistema negar o acesso.
+    func criarBookmarkPastaDestino(_ url: URL) throws -> (bookmark: Data, nome: String) {
+        try SecurityScopedBookmark.criar(para: url)
+    }
+
+    /// Aplica um bookmark de pasta de destino já criado (ver
+    /// `criarBookmarkPastaDestino`). A partir de agora, esta pasta passa a
+    /// ter prioridade sobre a pasta local (ver
+    /// `PhotoSyncEngine.resolverPastaDestino`). Itens já enviados para a
     /// pasta anterior permanecem lá — só os próximos backups usam a nova pasta.
+    func aplicarPastaDestinoExterna(bookmark: Data, nome: String) {
+        defaults.set(bookmark, forKey: SyncConfig.DefaultsKey.destinationBookmark)
+        destinoExternoNome = nome
+    }
+
+    /// Conveniência para quando NENHUMA pasta externa estava configurada
+    /// ainda (ex.: banner inicial) — não há necessidade de aviso de troca.
     ///
     /// - Throws: `SyncError.pastaExternaInacessivel` se o sistema negar o acesso.
     func salvarPastaDestinoExterna(_ url: URL) throws {
-        guard url.startAccessingSecurityScopedResource() else {
-            throw SyncError.pastaExternaInacessivel
-        }
-        defer { url.stopAccessingSecurityScopedResource() }
-
-        let bookmark = try url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
-        defaults.set(bookmark, forKey: SyncConfig.DefaultsKey.destinationBookmark)
-        destinoExternoNome = url.lastPathComponent
+        let (bookmark, nome) = try criarBookmarkPastaDestino(url)
+        aplicarPastaDestinoExterna(bookmark: bookmark, nome: nome)
     }
 
     /// Remove a pasta externa escolhida, revertendo o backup para a pasta local
@@ -189,21 +215,6 @@ final class SyncViewModel: ObservableObject {
     func removerPastaDestinoExterna() {
         defaults.removeObject(forKey: SyncConfig.DefaultsKey.destinationBookmark)
         destinoExternoNome = nil
-    }
-
-    /// Resolve o nome de exibição (último componente do caminho) de um bookmark
-    /// salvo, só para fins de UI — falhas aqui não são fatais (retorna `nil`).
-    private static func nomeAmigavel(deBookmark bookmarkData: Data) -> String? {
-        var estaDesatualizado = false
-        guard let url = try? URL(
-            resolvingBookmarkData: bookmarkData,
-            options: [],
-            relativeTo: nil,
-            bookmarkDataIsStale: &estaDesatualizado
-        ) else {
-            return nil
-        }
-        return url.lastPathComponent
     }
 
     /// Reseta o livro-razão, fazendo a PRÓXIMA sincronização reprocessar TODOS os
@@ -224,6 +235,20 @@ final class SyncViewModel: ObservableObject {
         novoStats.ultimaSync = nil
         stats = novoStats
         await refreshCounts()
+    }
+
+    // MARK: - Informações de armazenamento (sob demanda)
+
+    /// Espaço livre (em bytes) no volume da pasta de destino atual.
+    /// Chamado sob demanda pela UI (Configurações) — nunca automaticamente.
+    func espacoLivreDestino() async throws -> Int64 {
+        try await engine.espacoLivreDestino(folderName: folderName)
+    }
+
+    /// Tamanho total (em bytes) já ocupado pela pasta de backup. Pode ser
+    /// lento em bibliotecas grandes (enumera todos os arquivos).
+    func tamanhoTotalBackup() async throws -> Int64 {
+        try await engine.tamanhoTotalBackup(folderName: folderName)
     }
 
     /// Caminho amigável exibido nas Configurações (apenas informativo).

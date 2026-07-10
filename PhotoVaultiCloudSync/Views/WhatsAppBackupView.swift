@@ -3,14 +3,15 @@
 //  PhotoVaultiCloudSync
 //
 //  Tela dedicada ao backup de mídia do WhatsApp — funcionalidade SEPARADA do
-//  backup de fotos da galeria, com sua própria pasta de ORIGEM (a pasta que o
-//  WhatsApp expõe no app Arquivos) e pasta de DESTINO.
+//  backup de fotos da galeria, com suas próprias pastas de ORIGEM (uma ou
+//  mais — a pasta que o WhatsApp expõe no app Arquivos) e pasta de DESTINO.
 //
 //  O WhatsApp não permite escolher por conversa/contato — essa informação
 //  fica presa no banco de dados interno dele, fora do alcance de qualquer
 //  app de terceiros por causa do sandbox do iOS. O "filtro" possível aqui é
-//  a própria pasta de origem que o usuário escolhe (ex.: apontar só para
-//  "WhatsApp Images" em vez da pasta "Media" inteira).
+//  as próprias pastas de origem que o usuário escolhe (ex.: apontar para
+//  "WhatsApp Images" e "WhatsApp Video" separadamente em vez da pasta
+//  "Media" inteira).
 //
 
 import SwiftUI
@@ -37,24 +38,44 @@ struct WhatsAppBackupView: View {
     @State private var mostrandoConfirmacaoReset = false
     @State private var resetando = false
 
+    /// Bookmark de um novo destino já escolhido, aguardando confirmação do
+    /// usuário (só é pedida quando JÁ havia um destino configurado).
+    @State private var destinoPendente: (bookmark: Data, nome: String)?
+    @State private var mostrandoConfirmacaoTrocaDestino = false
+
+    /// Espaço em disco (consultado sob demanda — pode ser lento).
+    @State private var espacoLivreTexto: String?
+    @State private var tamanhoBackupTexto: String?
+    @State private var carregandoEspaco = false
+    @State private var erroEspaco: String?
+
     var body: some View {
         Form {
             Section {
-                if let origem = vm.origemNome {
-                    LabeledContent("Pasta escolhida", value: origem)
-                } else {
+                if vm.origens.isEmpty {
                     Text("Nenhuma pasta escolhida ainda.")
                         .foregroundStyle(.secondary)
+                } else {
+                    ForEach(vm.origens) { origem in
+                        Text(origem.nome)
+                    }
+                    .onDelete { indices in
+                        // Resolve todos os alvos ANTES de remover — remover um
+                        // item desloca os índices seguintes no array original.
+                        let paraRemover = indices.map { vm.origens[$0] }
+                        for origem in paraRemover { vm.removerOrigem(origem) }
+                    }
                 }
-                Button("Escolher pasta de origem...") {
+                Button("Adicionar pasta de origem...") {
                     alvoPicker = .origem
                 }
             } header: {
                 Text("De onde ler (WhatsApp)")
             } footer: {
-                Text("Aponte para Arquivos ▸ Neste iPhone ▸ WhatsApp ▸ Media (ou uma subpasta "
-                    + "específica, como \"WhatsApp Images\", para restringir o que é copiado — "
-                    + "o WhatsApp não permite escolher por conversa ou contato).")
+                Text("Aponte para Arquivos ▸ Neste iPhone ▸ WhatsApp ▸ Media (ou subpastas "
+                    + "específicas, como \"WhatsApp Images\", para restringir o que é copiado — "
+                    + "o WhatsApp não permite escolher por conversa ou contato). Você pode "
+                    + "adicionar mais de uma pasta.")
             }
 
             Section {
@@ -64,7 +85,7 @@ struct WhatsAppBackupView: View {
                     Text("Nenhuma pasta escolhida ainda.")
                         .foregroundStyle(.secondary)
                 }
-                Button("Escolher pasta de destino...") {
+                Button(vm.destinoNome == nil ? "Escolher pasta de destino..." : "Alterar pasta de destino...") {
                     alvoPicker = .destino
                 }
             } header: {
@@ -114,6 +135,11 @@ struct WhatsAppBackupView: View {
                         .font(.footnote)
                         .foregroundStyle(.red)
                 }
+                if let resultado = vm.ultimoResultado, resultado.falhas > 0 {
+                    Text("\(resultado.falhas) item(ns) falharam nesta última sincronização.")
+                        .font(.footnote)
+                        .foregroundStyle(.orange)
+                }
             } footer: {
                 Text("O backup é unidirecional: apagar um arquivo do WhatsApp não o remove da "
                     + "pasta de destino.")
@@ -124,6 +150,37 @@ struct WhatsAppBackupView: View {
                 LabeledContent("Última sincronização", value: textoUltimaSync)
             } header: {
                 Text("Status")
+            }
+
+            Section {
+                if let espacoLivreTexto {
+                    LabeledContent("Espaço livre no destino", value: espacoLivreTexto)
+                }
+                if let tamanhoBackupTexto {
+                    LabeledContent("Tamanho do backup", value: tamanhoBackupTexto)
+                }
+                Button {
+                    Task { await verificarEspaco() }
+                } label: {
+                    if carregandoEspaco {
+                        HStack {
+                            ProgressView()
+                            Text("Calculando…")
+                        }
+                    } else {
+                        Text("Verificar espaço em disco")
+                    }
+                }
+                .disabled(carregandoEspaco || vm.destinoNome == nil)
+                if let erroEspaco {
+                    Text(erroEspaco)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                }
+            } header: {
+                Text("Armazenamento")
+            } footer: {
+                Text("Calcular o tamanho do backup pode demorar em pastas com muitos arquivos.")
             }
 
             Section {
@@ -166,11 +223,20 @@ struct WhatsAppBackupView: View {
             case .success(let urls):
                 guard let url = urls.first else { return }
                 do {
+                    // Bookmark criado IMEDIATAMENTE — ver aviso em SecurityScopedBookmark
+                    // sobre a validade transitória da URL do .fileImporter.
+                    let (bookmark, nome) = try SecurityScopedBookmark.criar(para: url)
                     switch alvo {
                     case .origem:
-                        try vm.escolherOrigem(url)
+                        vm.adicionarOrigem(bookmark: bookmark, nome: nome)
                     case .destino:
-                        try vm.escolherDestino(url)
+                        if vm.destinoNome != nil {
+                            // Já havia um destino: pede confirmação antes de trocar.
+                            destinoPendente = (bookmark, nome)
+                            mostrandoConfirmacaoTrocaDestino = true
+                        } else {
+                            vm.aplicarNovoDestino(bookmark: bookmark, nome: nome)
+                        }
                     case nil:
                         break
                     }
@@ -181,6 +247,18 @@ struct WhatsAppBackupView: View {
             case .failure(let error):
                 erro = error.localizedDescription
             }
+        }
+        .alert("Trocar pasta de destino?", isPresented: $mostrandoConfirmacaoTrocaDestino) {
+            Button("Cancelar", role: .cancel) { destinoPendente = nil }
+            Button("Trocar") {
+                if let destinoPendente {
+                    vm.aplicarNovoDestino(bookmark: destinoPendente.bookmark, nome: destinoPendente.nome)
+                }
+                destinoPendente = nil
+            }
+        } message: {
+            Text("Os arquivos já copiados para \"\(vm.destinoNome ?? "")\" permanecem lá. A partir "
+                + "de agora, os novos backups vão para \"\(destinoPendente?.nome ?? "")\".")
         }
         .alert("Refazer backup completo?", isPresented: $mostrandoConfirmacaoReset) {
             Button("Cancelar", role: .cancel) {}
@@ -200,6 +278,23 @@ struct WhatsAppBackupView: View {
             Text("Isto NÃO apaga nenhum arquivo. Só faz o app esquecer o que já copiou, para "
                 + "reprocessar tudo na próxima sincronização.")
         }
+    }
+
+    private func verificarEspaco() async {
+        carregandoEspaco = true
+        erroEspaco = nil
+        do {
+            async let livre = vm.espacoLivreDestino()
+            async let total = vm.tamanhoTotalBackup()
+            let (livreBytes, totalBytes) = try await (livre, total)
+            espacoLivreTexto = StorageInfo.formatar(livreBytes)
+            tamanhoBackupTexto = StorageInfo.formatar(totalBytes)
+        } catch let erroSync as SyncError {
+            erroEspaco = erroSync.errorDescription
+        } catch {
+            erroEspaco = error.localizedDescription
+        }
+        carregandoEspaco = false
     }
 
     private var textoUltimaSync: String {
