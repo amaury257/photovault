@@ -68,6 +68,8 @@ enum SyncError: LocalizedError, Equatable {
     /// A pasta externa escolhida pelo usuário (via seletor de Arquivos) não
     /// pôde ser acessada — foi movida, apagada, ou a permissão expirou.
     case pastaExternaInacessivel
+    /// Nenhuma pasta de origem e/ou destino foi escolhida ainda (backup do WhatsApp).
+    case pastasNaoConfiguradas
 
     var errorDescription: String? {
         switch self {
@@ -88,8 +90,9 @@ enum SyncError: LocalizedError, Equatable {
         case .cancelada:
             return "Sincronização cancelada."
         case .pastaExternaInacessivel:
-            return "Não foi possível acessar a pasta de destino escolhida. "
-                + "Escolha a pasta novamente em Configurações."
+            return "Não foi possível acessar a pasta escolhida. Escolha a pasta novamente."
+        case .pastasNaoConfiguradas:
+            return "Escolha as pastas de origem e destino antes de sincronizar."
         }
     }
 }
@@ -176,8 +179,18 @@ enum SyncConfig {
         /// via seletor de Arquivos (pode estar dentro do iCloud Drive ou em
         /// qualquer outro provedor). Ausente = usa a pasta local padrão do app.
         static let destinationBookmark = "pv.destinationBookmarkData"
+
+        // ---- Backup do WhatsApp (funcionalidade separada) ----
+        /// Bookmark de segurança da pasta de ORIGEM (ex.: WhatsApp ▸ Media).
+        static let whatsAppSourceBookmark = "wa.sourceBookmarkData"
+        /// Bookmark de segurança da pasta de DESTINO do backup do WhatsApp.
+        static let whatsAppDestinationBookmark = "wa.destinationBookmarkData"
+        static let whatsAppLastSyncDate = "wa.lastSyncDate"
     }
 
     /// Nome do arquivo do livro-razão (ledger) em Application Support.
     static let ledgerFileName = "ledger.json"
+
+    /// Nome do livro-razão SEPARADO do backup do WhatsApp.
+    static let whatsAppLedgerFileName = "whatsapp_ledger.json"
 }

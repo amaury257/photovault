@@ -36,6 +36,7 @@ struct ContentView: View {
                     }
                     grupoContadores
                     botaoSincronizar
+                    linkBackupWhatsApp
                     rodapeInformativo
                     versaoLabel
                 }
@@ -221,6 +222,33 @@ struct ContentView: View {
         .buttonStyle(.borderedProminent)
         .controlSize(.large)
         .disabled(vm.status.estaSincronizando)
+    }
+
+    // MARK: - Backup do WhatsApp (funcionalidade separada)
+
+    /// Leva à tela dedicada de backup de mídia do WhatsApp — uma
+    /// funcionalidade independente, com sua própria pasta de origem/destino
+    /// e livro-razão (não compartilha nada com o backup de fotos acima).
+    private var linkBackupWhatsApp: some View {
+        NavigationLink {
+            WhatsAppBackupView()
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "message.fill")
+                    .font(.title3)
+                    .foregroundStyle(.green)
+                    .frame(width: 28)
+                Text("Backup do WhatsApp")
+                    .foregroundStyle(.primary)
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
+        }
+        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 16))
     }
 
     // MARK: - Rodapé
