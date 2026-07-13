@@ -20,6 +20,7 @@
 
 import Foundation
 import BackgroundTasks
+import Network
 import os
 
 /// Coordena o registro e o agendamento da tarefa de backup em background.
@@ -48,17 +49,36 @@ final class BackgroundSyncManager {
     /// sincronia com as Configurações via `atualizarFormato(_:)`.
     private var formato: ExportFormat
 
+    /// `true` = agendamento automático ligado. Mantido em sincronia com as
+    /// Configurações via `atualizarAgendamento(...)`. Padrão desligado
+    /// (opt-in) — sem isso ligado, nenhuma tarefa é submetida ao sistema.
+    private var scheduleEnabled: Bool
+
+    /// Horário preferido (hora/minuto) para a próxima execução automática.
+    private var horaPreferida: Int
+    private var minutoPreferido: Int
+
+    /// `true` = só executa se a rede atual for Wi-Fi (checado dentro da
+    /// própria tarefa, já que o `BGTaskScheduler` não distingue tipo de rede).
+    private var somenteWifi: Bool
+
     private init() {
         let tracker = PhotoTracker()
         self.tracker = tracker
         self.engine = PhotoSyncEngine(tracker: tracker)
+        let defaults = UserDefaults.standard
         // Lê a última pasta escolhida pelo usuário (ou o padrão).
-        self.folderName = UserDefaults.standard
+        self.folderName = defaults
             .string(forKey: SyncConfig.DefaultsKey.folderName) ?? SyncConfig.nomePastaPadrao
         // Lê o último formato escolhido (ou o padrão).
-        self.formato = UserDefaults.standard
+        self.formato = defaults
             .string(forKey: SyncConfig.DefaultsKey.exportFormat)
             .flatMap(ExportFormat.init(rawValue:)) ?? SyncConfig.formatoPadrao
+        // Lê as preferências de agendamento (mesmos padrões do SyncViewModel).
+        self.scheduleEnabled = defaults.bool(forKey: SyncConfig.DefaultsKey.scheduleEnabled)
+        self.horaPreferida = defaults.object(forKey: SyncConfig.DefaultsKey.scheduleHour) as? Int ?? 3
+        self.minutoPreferido = defaults.object(forKey: SyncConfig.DefaultsKey.scheduleMinute) as? Int ?? 0
+        self.somenteWifi = defaults.object(forKey: SyncConfig.DefaultsKey.scheduleWifiOnly) as? Bool ?? true
     }
 
     /// Expõe o tracker/engine para reuso pelo ViewModel (fonte única de verdade).
@@ -74,6 +94,18 @@ final class BackgroundSyncManager {
     /// Configurações.
     func atualizarFormato(_ novoFormato: ExportFormat) {
         formato = novoFormato
+    }
+
+    /// Atualiza as preferências de agendamento e reagenda (ou cancela) a
+    /// tarefa em background IMEDIATAMENTE — não espera o app ir para segundo
+    /// plano para a mudança valer, já que o usuário acabou de mexer nisso nas
+    /// Configurações.
+    func atualizarAgendamento(habilitado: Bool, hora: Int, minuto: Int, somenteWifi: Bool) {
+        self.scheduleEnabled = habilitado
+        self.horaPreferida = hora
+        self.minutoPreferido = minuto
+        self.somenteWifi = somenteWifi
+        scheduleProcessing()
     }
 
     // MARK: - Registro (chamado uma vez no launch)
@@ -104,25 +136,87 @@ final class BackgroundSyncManager {
 
     // MARK: - Agendamento
 
-    /// Agenda a próxima execução de backup em segundo plano.
+    /// Agenda a próxima execução de backup em segundo plano, respeitando o
+    /// horário preferido do usuário — ou cancela qualquer agendamento
+    /// pendente se a sincronização automática estiver desligada.
     ///
-    /// - `requiresExternalPower`: só roda com o aparelho carregando (backup pesado).
-    /// - `requiresNetworkConnectivity`: rede p/ baixar originais do iCloud Fotos, se preciso.
-    /// - `earliestBeginDate`: pista para o sistema (~1h). O agendamento real fica
-    ///   a critério do iOS, que pondera bateria, uso e histórico.
+    /// - `requiresExternalPower`: `false` de propósito. Exigir o aparelho
+    ///   carregando junto de um HORÁRIO específico escolhido pelo usuário
+    ///   tornaria o recurso quase inútil na prática (a maioria não está
+    ///   carregando às 03:00 nem em qualquer hora fixa do dia).
+    /// - `requiresNetworkConnectivity`: precisa de rede para eventualmente
+    ///   baixar originais do iCloud Fotos que não estejam no aparelho — a
+    ///   distinção Wi-Fi/dados móveis é reforçada manualmente dentro da
+    ///   própria tarefa (ver `handleProcessing`), pois o `BGTaskScheduler`
+    ///   não expõe esse controle.
+    /// - `earliestBeginDate`: a PRÓXIMA ocorrência do horário preferido (hoje,
+    ///   se ainda não passou; amanhã, caso contrário). É só uma pista para o
+    ///   sistema — o momento real de execução fica a critério do iOS, que
+    ///   pondera bateria, uso recente e conectividade, e pode adiar por
+    ///   minutos ou horas.
     func scheduleProcessing() {
+        // Sempre cancela o que houver pendente antes de decidir de novo —
+        // evita acumular requests obsoletos com horários antigos.
+        BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: SyncConfig.bgTaskIdentifier)
+
+        guard scheduleEnabled else {
+            log.info("Agendamento automático desligado — nenhuma tarefa submetida.")
+            return
+        }
+
         let request = BGProcessingTaskRequest(identifier: SyncConfig.bgTaskIdentifier)
-        request.requiresExternalPower = true
+        request.requiresExternalPower = false
         request.requiresNetworkConnectivity = true
-        request.earliestBeginDate = Date(timeIntervalSinceNow: 60 * 60) // ~1 hora
+        request.earliestBeginDate = Self.proximaOcorrencia(hora: horaPreferida, minuto: minutoPreferido)
 
         do {
             try BGTaskScheduler.shared.submit(request)
-            log.info("Backup em background agendado.")
+            log.info("Backup em background agendado para ~\(self.horaPreferida, privacy: .public)h\(self.minutoPreferido, privacy: .public).")
         } catch {
             // Erros comuns: recurso indisponível no simulador, ou muitas tarefas
             // pendentes. Não é fatal — a sync manual continua funcionando.
             log.error("Falha ao agendar backup em background: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// Calcula a próxima data/hora em que `hora:minuto` ocorre a partir de
+    /// agora — hoje, se esse horário ainda não passou; amanhã, caso contrário.
+    private static func proximaOcorrencia(hora: Int, minuto: Int) -> Date {
+        let calendario = Calendar.current
+        let agora = Date()
+        let candidatoHoje = calendario.date(
+            bySettingHour: hora, minute: minuto, second: 0, of: agora
+        ) ?? agora
+        if candidatoHoje > agora {
+            return candidatoHoje
+        }
+        return calendario.date(byAdding: .day, value: 1, to: candidatoHoje) ?? candidatoHoje
+    }
+
+    /// Checagem pontual (não contínua) do tipo de rede atual, usada para
+    /// respeitar a preferência "Somente Wi-Fi". Espera até 3s pela primeira
+    /// atualização do `NWPathMonitor`; se não chegar a tempo, assume que NÃO
+    /// está em Wi-Fi (mais seguro para não gastar dados móveis sem querer).
+    private func estaEmWifi() async -> Bool {
+        await withCheckedContinuation { continuation in
+            let monitor = NWPathMonitor()
+            let fila = DispatchQueue(label: "com.photovault.sync.wifiCheck")
+            var jaRespondeu = false
+
+            monitor.pathUpdateHandler = { caminho in
+                guard !jaRespondeu else { return }
+                jaRespondeu = true
+                monitor.cancel()
+                continuation.resume(returning: caminho.usesInterfaceType(.wifi))
+            }
+            monitor.start(queue: fila)
+
+            fila.asyncAfter(deadline: .now() + 3) {
+                guard !jaRespondeu else { return }
+                jaRespondeu = true
+                monitor.cancel()
+                continuation.resume(returning: false)
+            }
         }
     }
 
@@ -138,11 +232,36 @@ final class BackgroundSyncManager {
 
         // Dispara o trabalho assíncrono. Guardamos a referência para poder cancelar
         // caso o sistema sinalize expiração do tempo disponível.
-        let trabalho = Task { [engine, folderName, formato, log] in
+        let trabalho = Task { [engine, folderName, formato, somenteWifi, log] in
+            // Reforça "Somente Wi-Fi" manualmente — o BGTaskScheduler não tem
+            // essa distinção. Se a rede atual não bater, pula esta passada sem
+            // marcar como falha (a próxima, já reagendada acima, tenta de novo).
+            if somenteWifi {
+                let emWifi = await self.estaEmWifi()
+                if !emWifi {
+                    log.info("Backup em background pulado: preferência é Somente Wi-Fi e a rede atual não é Wi-Fi.")
+                    task.setTaskCompleted(success: true)
+                    return
+                }
+            }
+
             do {
                 let resultado = try await engine.sync(folderName: folderName, formato: formato)
                 // Registra a data da última sync bem-sucedida.
                 UserDefaults.standard.set(Date(), forKey: SyncConfig.DefaultsKey.lastSyncDate)
+                // Não fica esperando o upload no iCloud aqui — o orçamento de
+                // tempo de uma BGProcessingTask é curto demais para o polling.
+                // Só acumula os caminhos na lista de pendentes; a checagem real
+                // acontece na próxima vez que o app abrir (ver
+                // `SyncViewModel.refreshCounts`) ou numa próxima sincronização.
+                if !resultado.caminhosRelativosCopiados.isEmpty {
+                    let defaults = UserDefaults.standard
+                    let existentes = defaults.stringArray(
+                        forKey: SyncConfig.DefaultsKey.pendingUploadRelativePaths
+                    ) ?? []
+                    let combinados = Array(Set(existentes + resultado.caminhosRelativosCopiados))
+                    defaults.set(combinados, forKey: SyncConfig.DefaultsKey.pendingUploadRelativePaths)
+                }
                 log.info("""
                     Backup em background concluído. Enviados: \(resultado.enviados, privacy: .public), \
                     falhas: \(resultado.falhas, privacy: .public)

@@ -162,10 +162,37 @@ struct ContentView: View {
                     .foregroundStyle(.orange)
                     .multilineTextAlignment(.center)
             }
+
+            // Status de upload no iCloud — só aparece quando faz sentido
+            // (pasta de destino dentro do iCloud Drive).
+            statusUploadICloudView
         }
         .frame(maxWidth: .infinity)
         .padding(24)
         .background(corStatus.opacity(0.10), in: RoundedRectangle(cornerRadius: 20))
+    }
+
+    /// Linha de status da verificação de upload no iCloud, exibida sob o
+    /// cartão principal. Escondida quando não há nada relevante a mostrar
+    /// (pasta local, ou ainda não verificado).
+    @ViewBuilder
+    private var statusUploadICloudView: some View {
+        if vm.verificandoUpload {
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("Confirmando upload no iCloud…")
+            }
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+        } else if case let .verificado(_, pendentes, comErro, _) = vm.statusUploadICloud {
+            HStack(spacing: 6) {
+                Image(systemName: pendentes > 0 || comErro > 0 ? "icloud.and.arrow.up" : "checkmark.icloud.fill")
+                Text(vm.statusUploadICloud.resumoTexto)
+            }
+            .font(.footnote)
+            .foregroundStyle(comErro > 0 ? .red : (pendentes > 0 ? .orange : .green))
+            .multilineTextAlignment(.center)
+        }
     }
 
     // MARK: - Contadores

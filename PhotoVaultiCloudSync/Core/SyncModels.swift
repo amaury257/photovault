@@ -113,6 +113,41 @@ struct SyncStats: Equatable {
 struct ResultadoSync: Equatable {
     var enviados: Int = 0
     var falhas: Int = 0
+    /// Caminhos RELATIVOS à pasta de destino de todos os arquivos escritos (ou
+    /// confirmados já existentes) NESTA execução — usados para verificar o
+    /// status de upload no iCloud sem precisar reenumerar a pasta inteira.
+    var caminhosRelativosCopiados: [String] = []
+}
+
+// MARK: - Verificação de upload no iCloud
+
+/// Resultado de uma checagem de status de upload no iCloud Drive para um
+/// conjunto de arquivos. Só faz sentido quando a pasta de destino está DENTRO
+/// do iCloud Drive — para pasta local, ver `.naoAplicavel`.
+enum UploadVerificationSummary: Equatable {
+    /// A pasta de destino não é uma pasta do iCloud Drive (é local ou outro
+    /// provedor sem essa noção de "upload") — não há nada para verificar.
+    case naoAplicavel
+    /// Ainda não foi feita nenhuma verificação nesta sessão.
+    case desconhecido
+    /// `confirmados`: já subiram por completo. `pendentes`: ainda enviando ou
+    /// aguardando a vez. `comErro`: a Apple recusou o upload (ex.: sem espaço
+    /// no iCloud) — vem junto da mensagem mais recente, se houver.
+    case verificado(confirmados: Int, pendentes: Int, comErro: Int, ultimoErro: String?)
+
+    var resumoTexto: String {
+        switch self {
+        case .naoAplicavel:
+            return "Pasta local — o iCloud não está envolvido neste backup."
+        case .desconhecido:
+            return "Ainda não verificado."
+        case let .verificado(confirmados, pendentes, comErro, _):
+            var partes = ["\(confirmados) confirmado(s) no iCloud"]
+            if pendentes > 0 { partes.append("\(pendentes) ainda enviando") }
+            if comErro > 0 { partes.append("\(comErro) com erro") }
+            return partes.joined(separator: ", ")
+        }
+    }
 }
 
 // MARK: - Histórico de sincronizações
@@ -208,6 +243,22 @@ enum SyncConfig {
         /// via seletor de Arquivos (pode estar dentro do iCloud Drive ou em
         /// qualquer outro provedor). Ausente = usa a pasta local padrão do app.
         static let destinationBookmark = "pv.destinationBookmarkData"
+
+        // ---- Verificação de upload no iCloud ----
+        /// Caminhos (relativos à pasta de destino) de arquivos copiados que
+        /// ainda não foram confirmados como enviados ao iCloud na última
+        /// checagem — para retomar a verificação em uma sessão futura.
+        static let pendingUploadRelativePaths = "pv.pendingUploadRelativePaths"
+
+        // ---- Agendamento automático ----
+        /// Liga/desliga a sincronização automática em background.
+        static let scheduleEnabled = "pv.scheduleEnabled"
+        /// Hora preferida (0–23) para a sincronização automática.
+        static let scheduleHour = "pv.scheduleHour"
+        /// Minuto preferido (0–59) para a sincronização automática.
+        static let scheduleMinute = "pv.scheduleMinute"
+        /// `true` = só roda em Wi-Fi; `false` = permite dados móveis também.
+        static let scheduleWifiOnly = "pv.scheduleWifiOnly"
     }
 
     /// Nome do arquivo do livro-razão (ledger) em Application Support.

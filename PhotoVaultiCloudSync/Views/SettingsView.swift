@@ -135,7 +135,7 @@ struct SettingsView: View {
 
                 Section {
                     if let espacoLivreTexto {
-                        LabeledContent("Espaço livre no destino", value: espacoLivreTexto)
+                        LabeledContent("Espaço livre no iPhone", value: espacoLivreTexto)
                     }
                     if let tamanhoBackupTexto {
                         LabeledContent("Tamanho do backup", value: tamanhoBackupTexto)
@@ -161,7 +161,62 @@ struct SettingsView: View {
                 } header: {
                     Text("Armazenamento")
                 } footer: {
-                    Text("Calcular o tamanho do backup pode demorar em bibliotecas grandes.")
+                    Text("Calcular o tamanho do backup pode demorar em bibliotecas grandes. Não "
+                        + "existe uma API pública para consultar o espaço TOTAL da sua conta "
+                        + "iCloud (Fotos + Backup + Drive) — essa informação só fica disponível em "
+                        + "Ajustes ▸ [seu nome] ▸ iCloud, no próprio iOS.")
+                }
+
+                Section {
+                    LabeledContent("Status") {
+                        Text(vm.statusUploadICloud.resumoTexto)
+                            .multilineTextAlignment(.trailing)
+                    }
+                    Button {
+                        Task { await vm.verificarUploadICloud() }
+                    } label: {
+                        if vm.verificandoUpload {
+                            HStack {
+                                ProgressView()
+                                Text("Verificando…")
+                            }
+                        } else {
+                            Text("Verificar uploads pendentes agora")
+                        }
+                    }
+                    .disabled(vm.verificandoUpload)
+                } header: {
+                    Text("Upload no iCloud")
+                } footer: {
+                    Text("Só se aplica quando a pasta de destino escolhida acima está dentro do "
+                        + "iCloud Drive. Confirma, arquivo por arquivo, se o envio para os "
+                        + "servidores da Apple já terminou (não só a cópia local) — útil antes de "
+                        + "apagar as fotos originais do iPhone, por exemplo.")
+                }
+
+                Section {
+                    Toggle("Sincronização automática", isOn: $vm.agendamentoHabilitado)
+
+                    if vm.agendamentoHabilitado {
+                        DatePicker(
+                            "Horário preferido",
+                            selection: $vm.agendamentoHorario,
+                            displayedComponents: .hourAndMinute
+                        )
+                        Picker("Rede permitida", selection: $vm.agendamentoSomenteWifi) {
+                            Text("Somente Wi-Fi").tag(true)
+                            Text("Wi-Fi e dados móveis").tag(false)
+                        }
+                        .pickerStyle(.menu)
+                    }
+                } header: {
+                    Text("Agendamento automático")
+                } footer: {
+                    Text("O iOS decide o momento real da execução — não é um alarme exato. Ele "
+                        + "considera bateria, uso recente do app e conectividade, e pode adiar a "
+                        + "tarefa por minutos ou até algumas horas. \"Somente Wi-Fi\" é verificado "
+                        + "no momento da execução; se a rede não bater, o app pula essa passada "
+                        + "e tenta de novo mais tarde, sem gastar dados móveis.")
                 }
 
                 Section {

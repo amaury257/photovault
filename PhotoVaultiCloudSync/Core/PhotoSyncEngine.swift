@@ -266,6 +266,7 @@ actor PhotoSyncEngine {
         var enviados = 0
         var falhas = 0
         var processados = 0
+        var caminhosRelativosCopiados: [String] = []
         progresso(processados, total)
 
         // 3. Exporta cada asset pendente. Uma falha em UM asset (ex.: foto
@@ -276,10 +277,11 @@ actor PhotoSyncEngine {
             if cancelado { throw SyncError.cancelada }
 
             do {
-                try await exportarAsset(asset, para: destino, formato: formato)
+                let nomes = try await exportarAsset(asset, para: destino, formato: formato)
                 // Só marca no livro-razão APÓS a escrita coordenada bem-sucedida.
                 try await tracker.markSynced(asset.localIdentifier)
                 enviados += 1
+                caminhosRelativosCopiados.append(contentsOf: nomes)
             } catch {
                 falhas += 1
             }
@@ -288,23 +290,30 @@ actor PhotoSyncEngine {
             progresso(processados, total)
         }
 
-        return ResultadoSync(enviados: enviados, falhas: falhas)
+        return ResultadoSync(
+            enviados: enviados, falhas: falhas,
+            caminhosRelativosCopiados: caminhosRelativosCopiados
+        )
     }
 
     // MARK: - Exportação de um asset (dispatcher por formato)
 
     /// Ponto único de exportação de um asset. Encaminha para o caminho de dados
     /// brutos (`.original`) ou para o caminho de conversão universal (`.compativel`).
+    ///
+    /// - Returns: os nomes de arquivo (relativos à pasta de destino) gravados
+    ///   ou já existentes para este asset — usados na verificação de upload.
+    @discardableResult
     private func exportarAsset(
         _ asset: PHAsset,
         para destino: URL,
         formato: ExportFormat
-    ) async throws {
+    ) async throws -> [String] {
         switch formato {
         case .original:
-            try await exportarRecursosOriginais(asset, para: destino)
+            return try await exportarRecursosOriginais(asset, para: destino)
         case .compativel:
-            try await exportarCompativel(asset, para: destino)
+            return try await exportarCompativel(asset, para: destino)
         }
     }
 
@@ -317,7 +326,8 @@ actor PhotoSyncEngine {
     ///   - vídeo original (.video);
     ///   - o vídeo de um Live Photo (.pairedVideo).
     /// Exportamos todos para um backup "original completo".
-    private func exportarRecursosOriginais(_ asset: PHAsset, para destino: URL) async throws {
+    @discardableResult
+    private func exportarRecursosOriginais(_ asset: PHAsset, para destino: URL) async throws -> [String] {
         let recursos = PHAssetResource.assetResources(for: asset)
         guard !recursos.isEmpty else {
             // Sem recursos acessíveis (asset degradado). Não é fatal para os demais,
@@ -328,6 +338,7 @@ actor PhotoSyncEngine {
         // Prefixo curto e estável derivado do localIdentifier, para evitar colisões
         // entre arquivos de mesmo nome originados de assets diferentes.
         let prefixo = Self.prefixoEstavel(para: asset.localIdentifier)
+        var nomesGravados: [String] = []
 
         for recurso in recursos {
             guard Self.deveExportar(recurso.type) else { continue }
@@ -338,6 +349,7 @@ actor PhotoSyncEngine {
             // Idempotência: se o arquivo já existe no destino, não reescreve. Isso
             // reforça o one-way (nunca sobrescrevemos/removemos cópias existentes).
             if FileManager.default.fileExists(atPath: destinoFinal.path) {
+                nomesGravados.append(nomeArquivo)
                 continue
             }
 
@@ -352,7 +364,10 @@ actor PhotoSyncEngine {
             // 3b. Move o arquivo temporário para a pasta de destino (escrita coordenada),
             //     preservando a data original da foto/vídeo (não a data do backup).
             try coordenarMovimento(de: tempURL, para: destinoFinal, dataOriginal: asset.creationDate)
+            nomesGravados.append(nomeArquivo)
         }
+
+        return nomesGravados
     }
 
     /// Decide quais tipos de recurso entram no backup "original completo".
@@ -383,33 +398,36 @@ actor PhotoSyncEngine {
     /// Exporta um asset em formato universal, preservando a resolução máxima:
     ///   - Fotos (inclusive HEIC/RAW e o quadro-chave de Live Photos) → JPEG.
     ///   - Vídeos → MP4 com codec H.264 (transcodifica de HEVC quando necessário).
-    private func exportarCompativel(_ asset: PHAsset, para destino: URL) async throws {
+    @discardableResult
+    private func exportarCompativel(_ asset: PHAsset, para destino: URL) async throws -> [String] {
         let prefixo = Self.prefixoEstavel(para: asset.localIdentifier)
         let base = Self.nomeBase(para: asset)
 
         switch asset.mediaType {
         case .image:
-            let destinoFinal = destino.appendingPathComponent(
-                "\(prefixo)_\(base).jpg", isDirectory: false)
+            let nomeArquivo = "\(prefixo)_\(base).jpg"
+            let destinoFinal = destino.appendingPathComponent(nomeArquivo, isDirectory: false)
             // Idempotência: nunca reescreve nem toca em cópia existente (one-way).
-            if FileManager.default.fileExists(atPath: destinoFinal.path) { return }
+            if FileManager.default.fileExists(atPath: destinoFinal.path) { return [nomeArquivo] }
 
             let jpeg = try await obterJPEGCompativel(asset)
             try gravarDados(jpeg, em: destinoFinal, nomeTemp: "\(base).jpg", dataOriginal: asset.creationDate)
+            return [nomeArquivo]
 
         case .video:
-            let destinoFinal = destino.appendingPathComponent(
-                "\(prefixo)_\(base).mp4", isDirectory: false)
-            if FileManager.default.fileExists(atPath: destinoFinal.path) { return }
+            let nomeArquivo = "\(prefixo)_\(base).mp4"
+            let destinoFinal = destino.appendingPathComponent(nomeArquivo, isDirectory: false)
+            if FileManager.default.fileExists(atPath: destinoFinal.path) { return [nomeArquivo] }
 
             let tempURL = FileManager.default.temporaryDirectory
                 .appendingPathComponent(UUID().uuidString + "_" + base + ".mp4")
             try await exportarVideoH264(asset, paraArquivo: tempURL)
             try coordenarMovimento(de: tempURL, para: destinoFinal, dataOriginal: asset.creationDate)
+            return [nomeArquivo]
 
         default:
             // Áudio ou tipos desconhecidos: nada a exportar no modo compatível.
-            return
+            return []
         }
     }
 
@@ -651,6 +669,80 @@ actor PhotoSyncEngine {
         if let erroInterno {
             throw Self.mapearErroDeEscrita(erroInterno, nomeArquivo: destinoFinal.lastPathComponent)
         }
+    }
+
+    // MARK: - Verificação de upload no iCloud
+
+    /// `true` quando a pasta de destino ATUAL está dentro do iCloud Drive (ou
+    /// outro provedor "ubíquo" do Files) — só nesse caso existe um "upload"
+    /// real para confirmar. Pasta local do app sempre retorna `false`.
+    func destinoEhICloud(folderName: String) throws -> Bool {
+        let destino = try resolverPastaDestino(folderName: folderName)
+        return FileManager.default.isUbiquitousItem(at: destino)
+    }
+
+    /// Verifica, por polling limitado no tempo, se os arquivos em
+    /// `caminhosRelativos` (relativos à pasta de destino) já terminaram de
+    /// subir para o iCloud.
+    ///
+    /// Usa as chaves padrão de `URLResourceValues` para itens ubíquos —
+    /// disponíveis para qualquer URL dentro de um container do iCloud Drive ao
+    /// qual o app tenha acesso (via bookmark do seletor de Arquivos), sem
+    /// exigir nenhum entitlement de iCloud próprio do app.
+    ///
+    /// Não usamos `NSMetadataQuery` (a API "correta" orientada a eventos) de
+    /// propósito: este app só roda em primeiro plano durante uma checagem
+    /// pontual, então um polling simples e com prazo é mais fácil de raciocinar
+    /// e não deixa observadores pendurados entre execuções.
+    ///
+    /// - Returns: os caminhos confirmados, os ainda pendentes (não deram tempo
+    ///   de confirmar dentro do prazo) e os que retornaram erro de upload.
+    func verificarUploads(
+        folderName: String,
+        caminhosRelativos: [String],
+        timeout: TimeInterval = 45,
+        intervaloPollNanos: UInt64 = 1_500_000_000,
+        progresso: @Sendable (Int, Int) -> Void = { _, _ in }
+    ) async throws -> (confirmados: [String], pendentes: [String], comErro: [(caminho: String, mensagem: String)]) {
+        let destino = try resolverPastaDestino(folderName: folderName)
+        guard destino.startAccessingSecurityScopedResource() else {
+            throw SyncError.pastaExternaInacessivel
+        }
+        defer { destino.stopAccessingSecurityScopedResource() }
+
+        var restantes = caminhosRelativos
+        var confirmados: [String] = []
+        var comErro: [(caminho: String, mensagem: String)] = []
+        let total = caminhosRelativos.count
+        let prazo = Date().addingTimeInterval(timeout)
+
+        // `repeat` garante sempre UMA passada, mesmo com `timeout` de 0 —
+        // usado pelas checagens rápidas (ex.: ao abrir a tela), que só querem
+        // o status atual sem ficar esperando uploads em andamento terminarem.
+        repeat {
+            var aindaPendentes: [String] = []
+            for caminho in restantes {
+                let url = destino.appendingPathComponent(caminho, isDirectory: false)
+                let valores = try? url.resourceValues(forKeys: [
+                    .ubiquitousItemIsUploadedKey,
+                    .ubiquitousItemUploadingErrorKey,
+                ])
+                if let erro = valores?.ubiquitousItemUploadingError {
+                    comErro.append((caminho, erro.localizedDescription))
+                } else if valores?.ubiquitousItemIsUploaded == true {
+                    confirmados.append(caminho)
+                } else {
+                    aindaPendentes.append(caminho)
+                }
+            }
+            restantes = aindaPendentes
+            progresso(total - restantes.count, total)
+
+            guard !restantes.isEmpty, Date() < prazo else { break }
+            try? await Task.sleep(nanoseconds: intervaloPollNanos)
+        } while true
+
+        return (confirmados, restantes, comErro)
     }
 
     /// Traduz erros de I/O em `SyncError` amigáveis, detectando o caso de

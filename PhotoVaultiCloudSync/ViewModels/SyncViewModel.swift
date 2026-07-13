@@ -43,6 +43,33 @@ final class SyncViewModel: ObservableObject {
     /// contagem de falhas no dashboard sem misturar isso ao `SyncStatus`.
     @Published private(set) var ultimoResultado: ResultadoSync?
 
+    /// Status mais recente da verificação de upload no iCloud (ver
+    /// `verificarUploadICloud`). `.desconhecido` até a primeira checagem.
+    @Published private(set) var statusUploadICloud: UploadVerificationSummary = .desconhecido
+
+    /// `true` enquanto uma checagem de upload está em andamento (polling).
+    @Published private(set) var verificandoUpload = false
+
+    // MARK: - Agendamento automático
+
+    /// Liga/desliga a sincronização automática em background. Alterar aplica
+    /// imediatamente (reagenda ou cancela a tarefa em background na hora).
+    @Published var agendamentoHabilitado: Bool {
+        didSet { persistirAgendamento() }
+    }
+
+    /// Horário preferido (só as componentes de hora/minuto importam — a data
+    /// do `Date` em si é irrelevante, é só o que o `DatePicker` exige).
+    @Published var agendamentoHorario: Date {
+        didSet { persistirAgendamento() }
+    }
+
+    /// `true` = só sincroniza automaticamente em Wi-Fi; `false` = permite
+    /// dados móveis também.
+    @Published var agendamentoSomenteWifi: Bool {
+        didSet { persistirAgendamento() }
+    }
+
     // MARK: - Dependências
 
     private let engine: PhotoSyncEngine
@@ -80,6 +107,36 @@ final class SyncViewModel: ObservableObject {
         } else {
             self.destinoExternoNome = nil
         }
+
+        // Agendamento automático: desabilitado por padrão (opt-in), horário
+        // padrão 03:00, e só Wi-Fi por padrão (evita gastar dados móveis sem
+        // o usuário ter escolhido isso explicitamente).
+        self.agendamentoHabilitado = defaults.bool(forKey: SyncConfig.DefaultsKey.scheduleEnabled)
+        let horaSalva = defaults.object(forKey: SyncConfig.DefaultsKey.scheduleHour) as? Int ?? 3
+        let minutoSalvo = defaults.object(forKey: SyncConfig.DefaultsKey.scheduleMinute) as? Int ?? 0
+        self.agendamentoHorario = Calendar.current.date(
+            bySettingHour: horaSalva, minute: minutoSalvo, second: 0, of: Date()
+        ) ?? Date()
+        self.agendamentoSomenteWifi = defaults.object(forKey: SyncConfig.DefaultsKey.scheduleWifiOnly) as? Bool ?? true
+    }
+
+    /// Persiste as preferências de agendamento e propaga ao gerenciador de
+    /// background, que reagenda (ou cancela) a tarefa imediatamente — não
+    /// espera o app ir para segundo plano para a mudança valer.
+    private func persistirAgendamento() {
+        let componentes = Calendar.current.dateComponents([.hour, .minute], from: agendamentoHorario)
+        let hora = componentes.hour ?? 3
+        let minuto = componentes.minute ?? 0
+
+        defaults.set(agendamentoHabilitado, forKey: SyncConfig.DefaultsKey.scheduleEnabled)
+        defaults.set(hora, forKey: SyncConfig.DefaultsKey.scheduleHour)
+        defaults.set(minuto, forKey: SyncConfig.DefaultsKey.scheduleMinute)
+        defaults.set(agendamentoSomenteWifi, forKey: SyncConfig.DefaultsKey.scheduleWifiOnly)
+
+        BackgroundSyncManager.shared.atualizarAgendamento(
+            habilitado: agendamentoHabilitado, hora: hora, minuto: minuto,
+            somenteWifi: agendamentoSomenteWifi
+        )
     }
 
     // MARK: - Ações
@@ -101,6 +158,11 @@ final class SyncViewModel: ObservableObject {
         }
 
         stats = novoStats
+
+        // Checagem rápida (sem esperar) de qualquer pendência de upload de
+        // sessões anteriores, para o status do iCloud não ficar desatualizado
+        // só por reabrir o app.
+        await verificarUploadICloud(rapida: true)
     }
 
     /// Dispara uma sincronização manual ("Sincronizar Agora").
@@ -144,6 +206,11 @@ final class SyncViewModel: ObservableObject {
                 enviados: resultado.enviados, falhas: resultado.falhas
             ))
             await NotificationManager.shared.notificarConclusao(tipo: .fotos, resultado: resultado)
+
+            // Só DEPOIS de marcar "concluído" é que confirmamos o upload no
+            // iCloud — isso pode levar dezenas de segundos (polling), então não
+            // faz sentido segurar o resultado da cópia local por causa disso.
+            await verificarUploadICloud(novosCaminhos: resultado.caminhosRelativosCopiados)
         } catch let erro as SyncError {
             status = .failed(erro.errorDescription ?? "Erro desconhecido.")
             await SyncHistoryStore.shared.registrar(HistoricoEntry(
@@ -249,6 +316,80 @@ final class SyncViewModel: ObservableObject {
     /// lento em bibliotecas grandes (enumera todos os arquivos).
     func tamanhoTotalBackup() async throws -> Int64 {
         try await engine.tamanhoTotalBackup(folderName: folderName)
+    }
+
+    // MARK: - Verificação de upload no iCloud
+
+    /// Caminhos (relativos à pasta de destino) ainda não confirmados como
+    /// enviados ao iCloud na última checagem — persistidos para retomar em
+    /// uma sessão futura (ex.: o app foi fechado com uploads grandes em curso).
+    private func caminhosPendentesPersistidos() -> [String] {
+        defaults.stringArray(forKey: SyncConfig.DefaultsKey.pendingUploadRelativePaths) ?? []
+    }
+
+    private func persistirCaminhosPendentes(_ caminhos: [String]) {
+        defaults.set(caminhos, forKey: SyncConfig.DefaultsKey.pendingUploadRelativePaths)
+    }
+
+    /// Verifica se os arquivos do backup já terminaram de subir para o iCloud.
+    ///
+    /// Combina qualquer pendência de checagens anteriores com `novosCaminhos`
+    /// (normalmente os arquivos recém-copiados por um `syncNow()`). Não faz
+    /// nada (além de atualizar o status para `.naoAplicavel`) se a pasta de
+    /// destino atual não estiver dentro do iCloud Drive.
+    ///
+    /// - Parameter rapida: quando `true`, faz só UMA passada de checagem (sem
+    ///   esperar uploads em andamento terminarem) — usado ao simplesmente abrir
+    ///   uma tela. Quando `false` (padrão, usado logo após um backup), espera
+    ///   até 45s para dar tempo de uploads recentes se completarem.
+    func verificarUploadICloud(novosCaminhos: [String] = [], rapida: Bool = false) async {
+        guard !verificandoUpload else { return }
+
+        let ehICloud: Bool
+        do {
+            ehICloud = try await engine.destinoEhICloud(folderName: folderName)
+        } catch {
+            // Não conseguiu nem resolver a pasta agora — deixa o status como
+            // estava e tenta de novo na próxima oportunidade.
+            return
+        }
+
+        guard ehICloud else {
+            statusUploadICloud = .naoAplicavel
+            // Pasta local não tem upload a acompanhar — descarta pendências
+            // antigas (ex.: o usuário trocou de uma pasta do iCloud pra local).
+            persistirCaminhosPendentes([])
+            return
+        }
+
+        let combinados = Array(Set(caminhosPendentesPersistidos() + novosCaminhos))
+        guard !combinados.isEmpty else {
+            statusUploadICloud = .verificado(confirmados: 0, pendentes: 0, comErro: 0, ultimoErro: nil)
+            return
+        }
+
+        verificandoUpload = true
+        defer { verificandoUpload = false }
+
+        do {
+            let resultado = try await engine.verificarUploads(
+                folderName: folderName,
+                caminhosRelativos: combinados,
+                timeout: rapida ? 0 : 45
+            )
+            // Erros de upload voltam a ser tentados na próxima checagem (a
+            // Apple pode ter resolvido sozinha, ex.: espaço liberado no iCloud).
+            persistirCaminhosPendentes(resultado.pendentes + resultado.comErro.map(\.caminho))
+            statusUploadICloud = .verificado(
+                confirmados: resultado.confirmados.count,
+                pendentes: resultado.pendentes.count,
+                comErro: resultado.comErro.count,
+                ultimoErro: resultado.comErro.last?.mensagem
+            )
+        } catch {
+            // Falha ao acessar a pasta — mantém os pendentes persistidos como
+            // estavam, tenta de novo na próxima chamada.
+        }
     }
 
     /// Caminho amigável exibido nas Configurações (apenas informativo).
