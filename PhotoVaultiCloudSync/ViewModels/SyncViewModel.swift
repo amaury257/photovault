@@ -94,10 +94,15 @@ final class SyncViewModel: ObservableObject {
         // Carrega o formato de exportação persistido (ou o padrão).
         self.exportFormat = defaults.string(forKey: SyncConfig.DefaultsKey.exportFormat)
             .flatMap(ExportFormat.init(rawValue:)) ?? SyncConfig.formatoPadrao
-        // Carrega a última data de sync persistida.
-        self.stats.ultimaSync = defaults.object(
-            forKey: SyncConfig.DefaultsKey.lastSyncDate
-        ) as? Date
+        // Carrega a última data de sync persistida. Atribuição do VALOR INTEIRO
+        // da struct (não `self.stats.ultimaSync = ...`): mutar só um sub-campo
+        // de uma propriedade `@Published` passa pelo getter do wrapper, o que o
+        // verificador de inicialização definitiva do Swift trata como "leitura
+        // completa de `self`" — e nesse ponto do `init` ainda haveria stored
+        // properties (as de agendamento, logo abaixo) sem valor.
+        self.stats = SyncStats(
+            ultimaSync: defaults.object(forKey: SyncConfig.DefaultsKey.lastSyncDate) as? Date
+        )
         // Resolve (melhor esforço, só para exibição) o nome da pasta externa
         // já escolhida em uma sessão anterior, se houver.
         if let bookmarkData = defaults.data(forKey: SyncConfig.DefaultsKey.destinationBookmark) {
