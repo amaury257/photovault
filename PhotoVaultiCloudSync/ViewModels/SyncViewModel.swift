@@ -52,23 +52,21 @@ final class SyncViewModel: ObservableObject {
 
     // MARK: - Agendamento automático
 
-    /// Liga/desliga a sincronização automática em background. Alterar aplica
-    /// imediatamente (reagenda ou cancela a tarefa em background na hora).
-    @Published var agendamentoHabilitado: Bool {
-        didSet { persistirAgendamento() }
-    }
+    /// Liga/desliga a sincronização automática em background. A View chama
+    /// `persistirAgendamento()` explicitamente (via `.onChange`) quando isto
+    /// muda — NÃO usar `didSet` aqui: como as três propriedades de agendamento
+    /// são atribuídas em sequência dentro do `init`, um `didSet` disparado na
+    /// primeira tentaria ler as outras duas antes delas serem inicializadas
+    /// ("used before being initialized").
+    @Published var agendamentoHabilitado: Bool
 
     /// Horário preferido (só as componentes de hora/minuto importam — a data
     /// do `Date` em si é irrelevante, é só o que o `DatePicker` exige).
-    @Published var agendamentoHorario: Date {
-        didSet { persistirAgendamento() }
-    }
+    @Published var agendamentoHorario: Date
 
     /// `true` = só sincroniza automaticamente em Wi-Fi; `false` = permite
     /// dados móveis também.
-    @Published var agendamentoSomenteWifi: Bool {
-        didSet { persistirAgendamento() }
-    }
+    @Published var agendamentoSomenteWifi: Bool
 
     // MARK: - Dependências
 
@@ -122,8 +120,9 @@ final class SyncViewModel: ObservableObject {
 
     /// Persiste as preferências de agendamento e propaga ao gerenciador de
     /// background, que reagenda (ou cancela) a tarefa imediatamente — não
-    /// espera o app ir para segundo plano para a mudança valer.
-    private func persistirAgendamento() {
+    /// espera o app ir para segundo plano para a mudança valer. Chamado pela
+    /// View via `.onChange` nos três controles (Toggle/DatePicker/Picker).
+    func persistirAgendamento() {
         let componentes = Calendar.current.dateComponents([.hour, .minute], from: agendamentoHorario)
         let hora = componentes.hour ?? 3
         let minuto = componentes.minute ?? 0

@@ -196,6 +196,7 @@ struct SettingsView: View {
 
                 Section {
                     Toggle("Sincronização automática", isOn: $vm.agendamentoHabilitado)
+                        .onChange(of: vm.agendamentoHabilitado) { _ in vm.persistirAgendamento() }
 
                     if vm.agendamentoHabilitado {
                         DatePicker(
@@ -203,11 +204,14 @@ struct SettingsView: View {
                             selection: $vm.agendamentoHorario,
                             displayedComponents: .hourAndMinute
                         )
+                        .onChange(of: vm.agendamentoHorario) { _ in vm.persistirAgendamento() }
+
                         Picker("Rede permitida", selection: $vm.agendamentoSomenteWifi) {
                             Text("Somente Wi-Fi").tag(true)
                             Text("Wi-Fi e dados móveis").tag(false)
                         }
                         .pickerStyle(.menu)
+                        .onChange(of: vm.agendamentoSomenteWifi) { _ in vm.persistirAgendamento() }
                     }
                 } header: {
                     Text("Agendamento automático")
