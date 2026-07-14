@@ -184,6 +184,34 @@ actor PhotoSyncEngine {
         return StorageInfo.tamanhoTotal(em: destino)
     }
 
+    /// Tamanho total ESTIMADO da galeria original (soma dos recursos que um
+    /// backup "Original" exportaria — mesmo filtro de `deveExportar`), em
+    /// bytes. Diferente de `tamanhoTotalBackup`: este reflete a galeria
+    /// inteira, não só o que já foi copiado.
+    ///
+    /// Usa a chave `"fileSize"` de `PHAssetResource` via KVC — não é uma API
+    /// pública documentada, mas é o único jeito de obter o tamanho sem
+    /// baixar cada arquivo (o que seria lento e gastaria dados/bateria com
+    /// itens ainda só no iCloud). Se a chave parar de responder em alguma
+    /// versão futura do iOS, o recurso é simplesmente ignorado no total
+    /// (degrada para um número menor, não falha a chamada inteira).
+    ///
+    /// Pode ser lento em bibliotecas grandes (itera todos os assets) —
+    /// chamar sob demanda, nunca automaticamente.
+    func tamanhoTotalGaleria() -> Int64 {
+        var total: Int64 = 0
+        let assets = buscarAssets()
+        for indice in 0..<assets.count {
+            let asset = assets.object(at: indice)
+            for recurso in PHAssetResource.assetResources(for: asset) where Self.deveExportar(recurso.type) {
+                if let tamanho = recurso.value(forKey: "fileSize") as? Int64 {
+                    total += tamanho
+                }
+            }
+        }
+        return total
+    }
+
     /// Remove caracteres inválidos e espaços das pontas do nome da pasta,
     /// caindo no nome padrão se o resultado ficar vazio.
     private static func sanitizarNomePasta(_ nome: String) -> String {

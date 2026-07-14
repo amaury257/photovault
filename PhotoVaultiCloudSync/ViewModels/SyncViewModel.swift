@@ -322,6 +322,13 @@ final class SyncViewModel: ObservableObject {
         try await engine.tamanhoTotalBackup(folderName: folderName)
     }
 
+    /// Tamanho total ESTIMADO da galeria original (fotos + vídeos, mesmo com
+    /// o backup incompleto ou em formato Compatível). Pode ser lento em
+    /// bibliotecas grandes (itera todos os assets).
+    func tamanhoTotalGaleria() async -> Int64 {
+        await engine.tamanhoTotalGaleria()
+    }
+
     // MARK: - Verificação de upload no iCloud
 
     /// Caminhos (relativos à pasta de destino) ainda não confirmados como

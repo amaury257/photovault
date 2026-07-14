@@ -47,6 +47,7 @@ struct SettingsView: View {
 
     /// Espaço em disco (consultado sob demanda — pode ser lento).
     @State private var espacoLivreTexto: String?
+    @State private var tamanhoGaleriaTexto: String?
     @State private var tamanhoBackupTexto: String?
     @State private var carregandoEspaco = false
     @State private var erroEspaco: String?
@@ -134,11 +135,14 @@ struct SettingsView: View {
                 }
 
                 Section {
-                    if let espacoLivreTexto {
-                        LabeledContent("Espaço livre no iPhone", value: espacoLivreTexto)
+                    if let tamanhoGaleriaTexto {
+                        LabeledContent("Tamanho da galeria", value: tamanhoGaleriaTexto)
                     }
                     if let tamanhoBackupTexto {
                         LabeledContent("Tamanho do backup", value: tamanhoBackupTexto)
+                    }
+                    if let espacoLivreTexto {
+                        LabeledContent("Espaço livre no iPhone", value: espacoLivreTexto)
                     }
                     Button {
                         Task { await verificarEspaco() }
@@ -161,7 +165,10 @@ struct SettingsView: View {
                 } header: {
                     Text("Armazenamento")
                 } footer: {
-                    Text("Calcular o tamanho do backup pode demorar em bibliotecas grandes. Não "
+                    Text("\"Tamanho da galeria\" é uma estimativa da biblioteca original (pode "
+                        + "demorar em bibliotecas grandes). Ela não bate com \"Tamanho do backup\" "
+                        + "se a sincronização ainda não terminou, ou se o formato \"Compatível\" "
+                        + "está em uso (arquivos comprimidos ficam menores que o original). Não "
                         + "existe uma API pública para consultar o espaço TOTAL da sua conta "
                         + "iCloud (Fotos + Backup + Drive) — essa informação só fica disponível em "
                         + "Ajustes ▸ [seu nome] ▸ iCloud, no próprio iOS.")
@@ -341,9 +348,12 @@ struct SettingsView: View {
         do {
             async let livre = vm.espacoLivreDestino()
             async let total = vm.tamanhoTotalBackup()
+            async let galeria = vm.tamanhoTotalGaleria()   // não lança erro
+            let galeriaBytes = await galeria
             let (livreBytes, totalBytes) = try await (livre, total)
             espacoLivreTexto = StorageInfo.formatar(livreBytes)
             tamanhoBackupTexto = StorageInfo.formatar(totalBytes)
+            tamanhoGaleriaTexto = StorageInfo.formatar(galeriaBytes)
         } catch let erroSync as SyncError {
             erroEspaco = erroSync.errorDescription
         } catch {

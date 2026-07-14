@@ -201,7 +201,7 @@ struct ContentView: View {
         VStack(spacing: 0) {
             linhaContador(
                 icone: "photo.on.rectangle.angled",
-                titulo: "Fotos na galeria",
+                titulo: "Fotos e vídeos na galeria",
                 valor: "\(vm.stats.totalNaGaleria)"
             )
             Divider().padding(.leading, 52)
