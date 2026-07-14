@@ -94,12 +94,16 @@ struct AlbumFilterView: View {
             carregando = false
         }
         .onDisappear {
-            let novoFiltro = SyncFiltro(
+            // Compara como conjuntos: `Array(selecionados)` não tem ordem
+            // garantida, então comparar o `SyncFiltro` (que guarda um Array)
+            // direto poderia achar "mudou" mesmo com a MESMA seleção,
+            // disparando uma gravação e um refresh à toa a cada vez que a
+            // tela fecha.
+            guard Set(vm.filtro.albunsSelecionados) != selecionados else { return }
+            vm.salvarFiltro(SyncFiltro(
                 albunsSelecionados: Array(selecionados),
                 dataMinima: vm.filtro.dataMinima
-            )
-            guard novoFiltro != vm.filtro else { return }
-            vm.salvarFiltro(novoFiltro)
+            ))
         }
     }
 }

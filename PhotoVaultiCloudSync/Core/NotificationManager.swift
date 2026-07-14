@@ -107,14 +107,13 @@ final class NotificationManager: NSObject, ObservableObject {
 
 extension NotificationManager: UNUserNotificationCenterDelegate {
 
-    /// Mostra a notificação mesmo com o app já aberto em primeiro plano —
-    /// o padrão do sistema é NÃO mostrar banners nesse caso.
-    nonisolated func userNotificationCenter(
-        _ center: UNUserNotificationCenter,
-        willPresent notification: UNNotification
-    ) async -> UNNotificationPresentationOptions {
-        [.banner, .sound, .badge]
-    }
+    // Sem `willPresent` de propósito: o requisito iOS padrão para um
+    // delegate SEM esse método é não exibir banner/som enquanto o app está
+    // em primeiro plano — o mesmo comportamento de quando não havia delegate
+    // nenhum. Implementá-lo forçando `[.banner, .sound, .badge]` faria toda
+    // sincronização MANUAL (o usuário já olhando o status na tela) tocar som
+    // e mostrar banner de forma redundante — uma mudança de comportamento
+    // que não foi pedida.
 
     /// Toque na notificação (ação padrão) OU na ação "Ver detalhes": os dois
     /// levam ao Histórico — não há necessidade de distinguir.

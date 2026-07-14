@@ -44,6 +44,7 @@ struct SettingsView: View {
     @State private var resultadoConsistencia: [String]?
     @State private var recopiandoAusentes = false
     @State private var erroConsistencia: String?
+    @State private var mensagemRecopiar: String?
 
     /// Adoção do livro-razão salvo dentro da pasta de destino.
     @State private var adotandoLedger = false
@@ -349,6 +350,11 @@ struct SettingsView: View {
                             .disabled(recopiandoAusentes)
                         }
                     }
+                    if let mensagemRecopiar {
+                        Text(mensagemRecopiar)
+                            .font(.footnote)
+                            .foregroundStyle(.blue)
+                    }
                     if let erroConsistencia {
                         Text(erroConsistencia)
                             .font(.footnote)
@@ -575,6 +581,7 @@ struct SettingsView: View {
         verificandoConsistencia = true
         erroConsistencia = nil
         resultadoConsistencia = nil
+        mensagemRecopiar = nil
         do {
             resultadoConsistencia = try await vm.verificarConsistencia()
         } catch let erroSync as SyncError {
@@ -591,7 +598,12 @@ struct SettingsView: View {
         erroConsistencia = nil
         do {
             try await vm.recopiarItensAusentes(ids)
-            resultadoConsistencia = []
+            // Os itens só ficaram PENDENTES agora — ainda não foram
+            // recopiados de fato. Dizer "tudo certo" aqui seria falso; a
+            // cópia real só acontece na próxima "Sincronizar Agora".
+            mensagemRecopiar = "\(ids.count) item(ns) marcado(s) para recopiar. Toque em "
+                + "\"Sincronizar Agora\" na tela principal para copiá-los de volta."
+            resultadoConsistencia = nil
         } catch let erroSync as SyncError {
             erroConsistencia = erroSync.errorDescription
         } catch {

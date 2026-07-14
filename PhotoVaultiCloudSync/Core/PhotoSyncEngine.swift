@@ -247,6 +247,11 @@ actor PhotoSyncEngine {
             options: [.skipsHiddenFiles]
         ) {
             for case let url as URL in enumerador {
+                // Só arquivos regulares — uma subpasta com "_" no nome (o
+                // usuário pode criar qualquer coisa na pasta pelo Arquivos)
+                // não deve ser confundida com o prefixo de um item copiado.
+                guard (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true
+                else { continue }
                 let nome = url.lastPathComponent
                 if let corte = nome.firstIndex(of: "_") {
                     prefixosPresentes.insert(String(nome[nome.startIndex..<corte]))
@@ -522,10 +527,16 @@ actor PhotoSyncEngine {
     /// Sem registro anterior — caso de backups feitos antes deste recurso
     /// existir — confia na simples existência, como sempre foi: evita forçar
     /// uma reexportação em massa da biblioteca inteira só por causa desta
-    /// atualização do app.
+    /// atualização do app. Aproveita para registrar o tamanho ATUAL agora
+    /// (best-effort) — assim esses arquivos "legados" passam a se beneficiar
+    /// da detecção de truncamento a partir da PRÓXIMA sincronização, em vez
+    /// de nunca ganharem um registro.
     private func copiaValida(em destinoFinal: URL, nomeArquivo: String) async -> Bool {
         guard FileManager.default.fileExists(atPath: destinoFinal.path) else { return false }
         guard let esperado = await sizeTracker.esperado(paraArquivo: nomeArquivo) else {
+            if let atual = tamanhoEmDisco(destinoFinal) {
+                await sizeTracker.registrar(arquivo: nomeArquivo, tamanho: atual)
+            }
             return true
         }
         return tamanhoEmDisco(destinoFinal) == esperado
