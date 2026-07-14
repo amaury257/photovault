@@ -68,6 +68,16 @@ final class SyncViewModel: ObservableObject {
     /// dados móveis também.
     @Published var agendamentoSomenteWifi: Bool
 
+    // MARK: - Filtro de conteúdo e limite de dados móveis
+
+    /// Quais assets entram no backup (álbuns/data mínima). `.semFiltro` =
+    /// galeria inteira, comportamento padrão.
+    @Published private(set) var filtro: SyncFiltro
+
+    /// Limite de tamanho (bytes) por item ao sincronizar automaticamente
+    /// FORA do Wi-Fi. `nil` = sem limite.
+    @Published private(set) var limiteItemBytesForaDoWifi: Int64?
+
     // MARK: - Dependências
 
     private let engine: PhotoSyncEngine
@@ -121,6 +131,18 @@ final class SyncViewModel: ObservableObject {
             bySettingHour: horaSalva, minute: minutoSalvo, second: 0, of: Date()
         ) ?? Date()
         self.agendamentoSomenteWifi = defaults.object(forKey: SyncConfig.DefaultsKey.scheduleWifiOnly) as? Bool ?? true
+
+        // Filtro de conteúdo (álbuns/data mínima) — padrão: sem filtro.
+        if let dados = defaults.data(forKey: SyncConfig.DefaultsKey.filtro),
+           let filtroSalvo = try? JSONDecoder().decode(SyncFiltro.self, from: dados) {
+            self.filtro = filtroSalvo
+        } else {
+            self.filtro = .semFiltro
+        }
+
+        // Limite de tamanho por item fora do Wi-Fi — padrão: sem limite.
+        let limiteSalvo = defaults.object(forKey: SyncConfig.DefaultsKey.limiteItemBytesForaDoWifi) as? Int64
+        self.limiteItemBytesForaDoWifi = limiteSalvo
     }
 
     /// Persiste as preferências de agendamento e propaga ao gerenciador de
@@ -158,7 +180,7 @@ final class SyncViewModel: ObservableObject {
         // apenas por abrir a tela).
         let auth = PHPhotoLibrary.authorizationStatus(for: .readWrite)
         if auth == .authorized || auth == .limited {
-            novoStats.totalNaGaleria = await engine.contarAssetsNaGaleria()
+            novoStats.totalNaGaleria = await engine.contarAssetsNaGaleria(filtro: filtro)
         }
 
         stats = novoStats
@@ -186,7 +208,8 @@ final class SyncViewModel: ObservableObject {
             // main para atualizar a UI com segurança.
             let resultado = try await engine.sync(
                 folderName: folderName,
-                formato: exportFormat
+                formato: exportFormat,
+                filtro: filtro
             ) { [weak self] feitos, total in
                 Task { @MainActor in
                     self?.status = .syncing(enviados: feitos, total: total)
@@ -199,11 +222,16 @@ final class SyncViewModel: ObservableObject {
             var novoStats = stats
             novoStats.ultimaSync = agora
             novoStats.totalBackupFeito = await tracker.syncedCount
-            novoStats.totalNaGaleria = await engine.contarAssetsNaGaleria()
+            novoStats.totalNaGaleria = await engine.contarAssetsNaGaleria(filtro: filtro)
             stats = novoStats
 
             ultimoResultado = resultado
             status = .completed(agora)
+
+            // Best-effort: mantém a cópia do livro-razão dentro da própria
+            // pasta de destino em dia, para permitir "adotar" o backup de
+            // outra instalação depois (ver `adotarLedgerDoDestino`).
+            await exportarLedgerParaDestino()
 
             await SyncHistoryStore.shared.registrar(HistoricoEntry(
                 tipo: .fotos, data: agora,
@@ -326,7 +354,78 @@ final class SyncViewModel: ObservableObject {
     /// o backup incompleto ou em formato Compatível). Pode ser lento em
     /// bibliotecas grandes (itera todos os assets).
     func tamanhoTotalGaleria() async -> Int64 {
-        await engine.tamanhoTotalGaleria()
+        await engine.tamanhoTotalGaleria(filtro: filtro)
+    }
+
+    // MARK: - Filtro de conteúdo (álbuns, data mínima, limite fora do Wi-Fi)
+
+    /// Álbuns disponíveis para o filtro (usuário + Câmera/Screenshots).
+    func listarAlbuns() async -> [AlbumInfo] {
+        await engine.listarAlbuns()
+    }
+
+    /// Persiste o novo filtro e atualiza os contadores (o total na galeria
+    /// muda de acordo com o filtro). Propaga ao gerenciador de background,
+    /// que usa o mesmo filtro nas execuções automáticas.
+    func salvarFiltro(_ novoFiltro: SyncFiltro) {
+        filtro = novoFiltro
+        if let dados = try? JSONEncoder().encode(novoFiltro) {
+            defaults.set(dados, forKey: SyncConfig.DefaultsKey.filtro)
+        }
+        BackgroundSyncManager.shared.atualizarFiltro(novoFiltro)
+        Task { await refreshCounts() }
+    }
+
+    /// Persiste o limite de tamanho por item nas sincronizações automáticas
+    /// fora do Wi-Fi. `nil` = sem limite.
+    func salvarLimiteItemForaDoWifi(_ novoLimite: Int64?) {
+        limiteItemBytesForaDoWifi = novoLimite
+        if let novoLimite {
+            defaults.set(novoLimite, forKey: SyncConfig.DefaultsKey.limiteItemBytesForaDoWifi)
+        } else {
+            defaults.removeObject(forKey: SyncConfig.DefaultsKey.limiteItemBytesForaDoWifi)
+        }
+        BackgroundSyncManager.shared.atualizarLimiteItemForaDoWifi(novoLimite)
+    }
+
+    // MARK: - Consistência do backup (itens apagados manualmente do destino)
+
+    /// Identificadores do livro-razão sem arquivo correspondente na pasta de
+    /// destino atual — indicando que foram apagados manualmente de lá. Não
+    /// altera nada, só relata.
+    func verificarConsistencia() async throws -> [String] {
+        try await engine.verificarConsistencia(folderName: folderName)
+    }
+
+    /// Esquece os identificadores informados (ver `verificarConsistencia`),
+    /// fazendo a PRÓXIMA sincronização recopiá-los — sem reprocessar o
+    /// resto da biblioteca.
+    func recopiarItensAusentes(_ ids: [String]) async throws {
+        try await tracker.removerSelecionados(Set(ids))
+        await refreshCounts()
+    }
+
+    // MARK: - Livro-razão dentro da pasta de destino (exportar/adotar)
+
+    /// Grava uma cópia oculta do livro-razão atual DENTRO da pasta de
+    /// destino (best-effort — falhas aqui nunca comprometem o resultado da
+    /// sincronização em si). Permite "adotar" o backup a partir de outra
+    /// instalação do app sem reprocessar a biblioteca inteira.
+    func exportarLedgerParaDestino() async {
+        try? await engine.exportarLedgerParaDestino(folderName: folderName, tracker: tracker)
+    }
+
+    /// Lê o livro-razão salvo dentro da pasta de destino atual (se houver) e
+    /// funde os identificadores nele com o livro-razão local — só ACRESCENTA,
+    /// nunca remove (coerente com o one-way). Útil ao reinstalar o app ou
+    /// trocar de aparelho, apontando para uma pasta que já tem backup.
+    ///
+    /// - Returns: quantos identificadores eram novos (0 = nada para adotar,
+    ///   ou nenhum ledger encontrado na pasta).
+    func adotarLedgerDoDestino() async throws -> Int {
+        let adotados = try await engine.adotarLedgerDoDestino(folderName: folderName, tracker: tracker)
+        await refreshCounts()
+        return adotados
     }
 
     // MARK: - Verificação de upload no iCloud

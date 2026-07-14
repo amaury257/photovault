@@ -55,6 +55,15 @@ actor SyncHistoryStore {
         return entradas
     }
 
+    /// Entrada mais recente originada do agendamento AUTOMÁTICO (não conta
+    /// sincronizações manuais) — usada para avisar quando o agendamento
+    /// parece não estar rodando de verdade (comum com `BGProcessingTask`
+    /// em apps abertos raramente; o iOS decide o momento sozinho).
+    func ultimaAutomatica() -> HistoricoEntry? {
+        carregarSeNecessario()
+        return entradas.first { $0.origem == .automatico }
+    }
+
     /// Apaga todo o histórico (não afeta os livros-razão nem os arquivos copiados).
     func limpar() {
         carregarSeNecessario()

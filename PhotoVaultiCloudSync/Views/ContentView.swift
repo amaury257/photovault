@@ -26,11 +26,19 @@ struct ContentView: View {
     /// Erro do seletor de pasta iniciado pelo banner, se houver.
     @State private var erroPickerInicial: String?
 
+    /// Navegação programática ao Histórico, disparada pelo toque numa
+    /// notificação (ação "Ver detalhes" ou toque direto no banner) — ver
+    /// `NotificationManager.solicitarAberturaHistorico`.
+    @State private var historicoAbertoPorNotificacao = false
+
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 20) {
                     cartaoStatus
+                    if let dias = diasParaExpirar, dias <= 2 {
+                        bannerExpiracao(dias: dias)
+                    }
                     if vm.destinoExternoNome == nil {
                         bannerEscolhaPasta
                     }
@@ -80,6 +88,55 @@ struct ContentView: View {
             .task {
                 await vm.refreshCounts()
             }
+            .navigationDestination(isPresented: $historicoAbertoPorNotificacao) {
+                HistoryView()
+            }
+            .onReceive(NotificationManager.shared.$solicitarAberturaHistorico) { solicitado in
+                guard solicitado else { return }
+                historicoAbertoPorNotificacao = true
+                NotificationManager.shared.solicitarAberturaHistorico = false
+            }
+        }
+    }
+
+    // MARK: - Banner de expiração da assinatura (AltStore)
+
+    /// Dias restantes até a assinatura do app expirar (Apple ID gratuito via
+    /// AltStore Classic: 7 dias). `nil` quando não foi possível determinar
+    /// (ex.: rodando fora de um dispositivo sideloaded).
+    private var diasParaExpirar: Int? { ProvisioningExpiry.diasRestantes }
+
+    /// Aviso mostrado quando faltam ≤2 dias para a assinatura expirar — sem
+    /// isto, o único jeito de descobrir é o app simplesmente parar de abrir.
+    private func bannerExpiracao(dias: Int) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.title2)
+                    .foregroundStyle(.orange)
+                Text(dias <= 0 ? "Assinatura pode ter expirado" : "Assinatura expira em breve")
+                    .font(.headline)
+                Spacer()
+            }
+            Text(textoExpiracao(dias: dias))
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
+        .padding(16)
+        .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    private func textoExpiracao(dias: Int) -> String {
+        switch dias {
+        case ..<0:
+            return "A assinatura deste app (Apple ID gratuito via AltStore) já deveria ter "
+                + "expirado. Abra a AltStore para renovar assim que possível."
+        case 0:
+            return "A assinatura expira HOJE. Abra a AltStore agora para renovar — depois "
+                + "disso o app para de abrir até ser reassinado."
+        default:
+            return "A assinatura (Apple ID gratuito via AltStore) expira em \(dias) dia(s). "
+                + "Abra a AltStore para renovar antes que o app pare de abrir."
         }
     }
 

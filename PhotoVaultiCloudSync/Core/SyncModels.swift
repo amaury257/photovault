@@ -156,13 +156,22 @@ enum UploadVerificationSummary: Equatable {
 /// tela de Histórico. Guardado localmente, sem relação com o livro-razão
 /// (que controla o QUE já foi copiado; isto só guarda um LOG do que aconteceu
 /// em cada execução, para consulta).
-struct HistoricoEntry: Codable, Identifiable, Equatable {
+struct HistoricoEntry: Identifiable, Equatable {
     enum Tipo: String, Codable {
         case fotos
         case whatsApp
     }
 
-    var id = UUID()
+    /// De onde a sincronização partiu: toque manual em "Sincronizar Agora"
+    /// ou a tarefa automática em segundo plano (`BGProcessingTask`). Usado
+    /// para saber se o agendamento automático está de fato rodando — uma
+    /// sincronização manual diária mascararia um agendamento quebrado.
+    enum Origem: String, Codable {
+        case manual
+        case automatico
+    }
+
+    var id: UUID
     var tipo: Tipo
     var data: Date
     var enviados: Int
@@ -171,6 +180,54 @@ struct HistoricoEntry: Codable, Identifiable, Equatable {
     /// permissão negada, pasta inacessível) — não por falha de itens
     /// individuais, que já é refletida em `falhas`.
     var erroGeral: String?
+    var origem: Origem
+
+    init(
+        id: UUID = UUID(), tipo: Tipo, data: Date, enviados: Int, falhas: Int,
+        erroGeral: String? = nil, origem: Origem = .manual
+    ) {
+        self.id = id
+        self.tipo = tipo
+        self.data = data
+        self.enviados = enviados
+        self.falhas = falhas
+        self.erroGeral = erroGeral
+        self.origem = origem
+    }
+}
+
+// Codable manual (em vez de sintetizado): `origem` foi adicionado depois do
+// campo já existir em histórico persistido de usuários. Com sintetização
+// automática, uma entrada antiga sem essa chave faria o decode do ARRAY
+// INTEIRO falhar (`SyncHistoryStore` usa `try?` na lista completa),
+// apagando silenciosamente todo o histórico. `decodeIfPresent` com fallback
+// para `.manual` preserva a compatibilidade.
+extension HistoricoEntry: Codable {
+    private enum CodingKeys: String, CodingKey {
+        case id, tipo, data, enviados, falhas, erroGeral, origem
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        tipo = try c.decode(Tipo.self, forKey: .tipo)
+        data = try c.decode(Date.self, forKey: .data)
+        enviados = try c.decode(Int.self, forKey: .enviados)
+        falhas = try c.decode(Int.self, forKey: .falhas)
+        erroGeral = try c.decodeIfPresent(String.self, forKey: .erroGeral)
+        origem = try c.decodeIfPresent(Origem.self, forKey: .origem) ?? .manual
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(tipo, forKey: .tipo)
+        try c.encode(data, forKey: .data)
+        try c.encode(enviados, forKey: .enviados)
+        try c.encode(falhas, forKey: .falhas)
+        try c.encodeIfPresent(erroGeral, forKey: .erroGeral)
+        try c.encode(origem, forKey: .origem)
+    }
 }
 
 // MARK: - Formato de exportação
@@ -208,6 +265,32 @@ enum ExportFormat: String, CaseIterable, Identifiable {
                 + "máxima. Abre em qualquer PC, Android ou navegador, com um leve reencode."
         }
     }
+}
+
+// MARK: - Filtro de conteúdo (álbuns e data mínima)
+
+/// Filtro de quais assets entram no backup. Persistido nas Configurações e
+/// usado tanto para contar a galeria quanto para a sincronização de fato —
+/// os dois precisam concordar, senão o contador do painel mentiria sobre o
+/// que realmente será copiado.
+struct SyncFiltro: Codable, Equatable {
+    /// Identificadores de `PHAssetCollection` selecionados. Vazio = toda a
+    /// galeria (comportamento padrão, sem filtro de álbum).
+    var albunsSelecionados: [String] = []
+    /// Só assets criados A PARTIR desta data (inclusive). `nil` = sem limite.
+    var dataMinima: Date?
+
+    static let semFiltro = SyncFiltro()
+
+    var estaAtivo: Bool { !albunsSelecionados.isEmpty || dataMinima != nil }
+}
+
+/// Um álbum (ou álbum inteligente relevante) listado para o usuário escolher
+/// no filtro de conteúdo.
+struct AlbumInfo: Identifiable, Hashable {
+    var id: String
+    var titulo: String
+    var quantidade: Int
 }
 
 // MARK: - Configuração e constantes
@@ -259,6 +342,14 @@ enum SyncConfig {
         static let scheduleMinute = "pv.scheduleMinute"
         /// `true` = só roda em Wi-Fi; `false` = permite dados móveis também.
         static let scheduleWifiOnly = "pv.scheduleWifiOnly"
+
+        // ---- Filtro de conteúdo (álbuns e data mínima) ----
+        /// `SyncFiltro` codificado em JSON.
+        static let filtro = "pv.filtro"
+
+        // ---- Limite de tamanho por item fora do Wi-Fi ----
+        /// Bytes (Int64). Ausente/nil = sem limite.
+        static let limiteItemBytesForaDoWifi = "pv.limiteItemBytesForaDoWifi"
     }
 
     /// Nome do arquivo do livro-razão (ledger) em Application Support.

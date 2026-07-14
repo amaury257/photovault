@@ -62,6 +62,14 @@ final class BackgroundSyncManager {
     /// própria tarefa, já que o `BGTaskScheduler` não distingue tipo de rede).
     private var somenteWifi: Bool
 
+    /// Filtro de conteúdo (álbuns/data mínima). Mantido em sincronia com as
+    /// Configurações via `atualizarFiltro(_:)`.
+    private var filtro: SyncFiltro
+
+    /// Limite de tamanho por item fora do Wi-Fi. Mantido em sincronia via
+    /// `atualizarLimiteItemForaDoWifi(_:)`. `nil` = sem limite.
+    private var limiteItemBytesForaDoWifi: Int64?
+
     private init() {
         let tracker = PhotoTracker()
         self.tracker = tracker
@@ -79,6 +87,16 @@ final class BackgroundSyncManager {
         self.horaPreferida = defaults.object(forKey: SyncConfig.DefaultsKey.scheduleHour) as? Int ?? 3
         self.minutoPreferido = defaults.object(forKey: SyncConfig.DefaultsKey.scheduleMinute) as? Int ?? 0
         self.somenteWifi = defaults.object(forKey: SyncConfig.DefaultsKey.scheduleWifiOnly) as? Bool ?? true
+
+        if let dadosFiltro = defaults.data(forKey: SyncConfig.DefaultsKey.filtro),
+           let filtroSalvo = try? JSONDecoder().decode(SyncFiltro.self, from: dadosFiltro) {
+            self.filtro = filtroSalvo
+        } else {
+            self.filtro = .semFiltro
+        }
+        self.limiteItemBytesForaDoWifi = defaults.object(
+            forKey: SyncConfig.DefaultsKey.limiteItemBytesForaDoWifi
+        ) as? Int64
     }
 
     /// Expõe o tracker/engine para reuso pelo ViewModel (fonte única de verdade).
@@ -94,6 +112,16 @@ final class BackgroundSyncManager {
     /// Configurações.
     func atualizarFormato(_ novoFormato: ExportFormat) {
         formato = novoFormato
+    }
+
+    /// Mantém o filtro de conteúdo (álbuns/data mínima) atualizado.
+    func atualizarFiltro(_ novoFiltro: SyncFiltro) {
+        filtro = novoFiltro
+    }
+
+    /// Mantém o limite de tamanho por item fora do Wi-Fi atualizado.
+    func atualizarLimiteItemForaDoWifi(_ novoLimite: Int64?) {
+        limiteItemBytesForaDoWifi = novoLimite
     }
 
     /// Atualiza as preferências de agendamento e reagenda (ou cancela) a
@@ -232,23 +260,31 @@ final class BackgroundSyncManager {
 
         // Dispara o trabalho assíncrono. Guardamos a referência para poder cancelar
         // caso o sistema sinalize expiração do tempo disponível.
-        let trabalho = Task { [engine, folderName, formato, somenteWifi, log] in
+        let trabalho = Task { [engine, folderName, formato, somenteWifi, filtro, limiteItemBytesForaDoWifi, log] in
+            // Determina o tipo de rede uma única vez — usado tanto para a
+            // preferência "Somente Wi-Fi" quanto para o limite de tamanho
+            // por item fora do Wi-Fi.
+            let emWifi = await self.estaEmWifi()
+
             // Reforça "Somente Wi-Fi" manualmente — o BGTaskScheduler não tem
             // essa distinção. Se a rede atual não bater, pula esta passada sem
             // marcar como falha (a próxima, já reagendada acima, tenta de novo).
-            if somenteWifi {
-                let emWifi = await self.estaEmWifi()
-                if !emWifi {
-                    log.info("Backup em background pulado: preferência é Somente Wi-Fi e a rede atual não é Wi-Fi.")
-                    task.setTaskCompleted(success: true)
-                    return
-                }
+            if somenteWifi, !emWifi {
+                log.info("Backup em background pulado: preferência é Somente Wi-Fi e a rede atual não é Wi-Fi.")
+                task.setTaskCompleted(success: true)
+                return
             }
 
             do {
-                let resultado = try await engine.sync(folderName: folderName, formato: formato)
+                let resultado = try await engine.sync(
+                    folderName: folderName, formato: formato, filtro: filtro,
+                    limiteItemBytesForaDoWifi: limiteItemBytesForaDoWifi, emWifi: emWifi
+                )
                 // Registra a data da última sync bem-sucedida.
                 UserDefaults.standard.set(Date(), forKey: SyncConfig.DefaultsKey.lastSyncDate)
+                // Best-effort: mantém a cópia do livro-razão dentro da pasta de
+                // destino em dia (ver `PhotoSyncEngine.exportarLedgerParaDestino`).
+                try? await engine.exportarLedgerParaDestino(folderName: folderName, tracker: self.tracker)
                 // Não fica esperando o upload no iCloud aqui — o orçamento de
                 // tempo de uma BGProcessingTask é curto demais para o polling.
                 // Só acumula os caminhos na lista de pendentes; a checagem real
@@ -268,7 +304,8 @@ final class BackgroundSyncManager {
                     """)
                 await SyncHistoryStore.shared.registrar(HistoricoEntry(
                     tipo: .fotos, data: Date(),
-                    enviados: resultado.enviados, falhas: resultado.falhas
+                    enviados: resultado.enviados, falhas: resultado.falhas,
+                    origem: .automatico
                 ))
                 await NotificationManager.shared.notificarConclusao(tipo: .fotos, resultado: resultado)
                 task.setTaskCompleted(success: true)
@@ -278,7 +315,7 @@ final class BackgroundSyncManager {
                 log.error("Backup em background falhou: \(erro.localizedDescription, privacy: .public)")
                 await SyncHistoryStore.shared.registrar(HistoricoEntry(
                     tipo: .fotos, data: Date(), enviados: 0, falhas: 0,
-                    erroGeral: erro.errorDescription
+                    erroGeral: erro.errorDescription, origem: .automatico
                 ))
                 await NotificationManager.shared.notificarFalha(
                     tipo: .fotos, mensagem: erro.errorDescription ?? "Erro desconhecido."

@@ -23,6 +23,10 @@ struct PhotoVaultApp: App {
         // CRÍTICO: o registro da BG task precisa acontecer no init do App, antes
         // do fim do lançamento. Registrar depois causa exceção do sistema.
         BackgroundSyncManager.shared.registerTasks()
+        // Registra o delegate de notificações cedo — se o app foi ABERTO pelo
+        // toque numa notificação (app frio), o sistema só entrega a resposta
+        // depois que um delegate existir.
+        _ = NotificationManager.shared
     }
 
     var body: some Scene {

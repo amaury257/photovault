@@ -129,6 +129,51 @@ actor PhotoTracker {
         syncedIDs
     }
 
+    /// Remove SÓ os identificadores informados, fazendo a PRÓXIMA sincronização
+    /// tratá-los como pendentes novamente — sem afastar o resto do livro-razão.
+    ///
+    /// Uso típico: `PhotoSyncEngine.verificarConsistencia` encontrou itens cujos
+    /// arquivos sumiram da pasta de destino (apagados manualmente, por engano
+    /// ou para liberar espaço); esquecê-los aqui faz o motor recopiá-los na
+    /// próxima sincronização, sem precisar reprocessar a biblioteca inteira.
+    ///
+    /// - Throws: `SyncError.escritaFalhou` caso não consiga persistir a mudança.
+    func removerSelecionados(_ ids: Set<String>) throws {
+        guard !ids.isEmpty else { return }
+        let anterior = syncedIDs
+        syncedIDs.subtract(ids)
+        guard syncedIDs != anterior else { return }
+        do {
+            try save()
+        } catch {
+            syncedIDs = anterior
+            throw SyncError.escritaFalhou(motivo: "remoção seletiva do livro-razão: \(error.localizedDescription)")
+        }
+    }
+
+    /// Adiciona identificadores como JÁ SINCRONIZADOS sem reescrever nada —
+    /// usado para "adotar" um livro-razão salvo dentro da própria pasta de
+    /// destino (ver `FileSizeTracker`/exportação do ledger). Só ACRESCENTA
+    /// (união), nunca remove — coerente com o livro-razão "só crescer".
+    ///
+    /// - Returns: quantos identificadores eram novos (não fazia diferença
+    ///   contar os que já estavam presentes).
+    /// - Throws: `SyncError.escritaFalhou` caso não consiga persistir a mudança.
+    @discardableResult
+    func adotar(_ ids: Set<String>) throws -> Int {
+        let novosCount = ids.subtracting(syncedIDs).count
+        guard novosCount > 0 else { return 0 }
+        let anterior = syncedIDs
+        syncedIDs.formUnion(ids)
+        do {
+            try save()
+            return novosCount
+        } catch {
+            syncedIDs = anterior
+            throw SyncError.escritaFalhou(motivo: "adoção do livro-razão: \(error.localizedDescription)")
+        }
+    }
+
     /// Esvazia o livro-razão por completo, fazendo a PRÓXIMA sincronização tratar
     /// TODOS os assets da galeria como pendentes novamente (reprocessa tudo).
     ///

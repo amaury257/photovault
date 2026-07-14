@@ -33,14 +33,19 @@ actor PhotoSyncEngine {
     /// Livro-razão compartilhado (garante o comportamento one-way e sem duplicatas).
     private let tracker: PhotoTracker
 
+    /// Registro de tamanhos gravados, usado para detectar cópias truncadas
+    /// (ver `FileSizeTracker`).
+    private let sizeTracker: FileSizeTracker
+
     /// Sinalização cooperativa de cancelamento (usada pela tarefa em background
     /// quando o tempo expira). Verificada entre os assets.
     private var cancelado = false
 
     // MARK: - Init
 
-    init(tracker: PhotoTracker) {
+    init(tracker: PhotoTracker, sizeTracker: FileSizeTracker = FileSizeTracker()) {
         self.tracker = tracker
+        self.sizeTracker = sizeTracker
     }
 
     // MARK: - Cancelamento cooperativo
@@ -198,18 +203,114 @@ actor PhotoSyncEngine {
     ///
     /// Pode ser lento em bibliotecas grandes (itera todos os assets) —
     /// chamar sob demanda, nunca automaticamente.
-    func tamanhoTotalGaleria() -> Int64 {
-        var total: Int64 = 0
-        let assets = buscarAssets()
-        for indice in 0..<assets.count {
-            let asset = assets.object(at: indice)
-            for recurso in PHAssetResource.assetResources(for: asset) where Self.deveExportar(recurso.type) {
-                if let tamanho = recurso.value(forKey: "fileSize") as? Int64 {
-                    total += tamanho
+    func tamanhoTotalGaleria(filtro: SyncFiltro = .semFiltro) -> Int64 {
+        buscarAssets(filtro: filtro).reduce(into: Int64(0)) { total, asset in
+            total += Self.tamanhoEstimado(asset)
+        }
+    }
+
+    /// Soma o tamanho (em bytes) dos recursos "exportáveis" (mesmo filtro do
+    /// backup Original) de um único asset — via a mesma chave `fileSize`
+    /// (KVC, não documentada publicamente) usada por `tamanhoTotalGaleria`.
+    private static func tamanhoEstimado(_ asset: PHAsset) -> Int64 {
+        PHAssetResource.assetResources(for: asset)
+            .filter { deveExportar($0.type) }
+            .reduce(into: Int64(0)) { total, recurso in
+                total += (recurso.value(forKey: "fileSize") as? Int64) ?? 0
+            }
+    }
+
+    /// Verifica quais itens do livro-razão não têm mais nenhum arquivo
+    /// correspondente na pasta de destino atual — indicando que foram
+    /// apagados manualmente de lá (por engano, ou para liberar espaço). Não
+    /// altera nada, só relata; quem chama decide se quer esquecê-los (ver
+    /// `PhotoTracker.removerSelecionados`) para que sejam recopiados.
+    ///
+    /// Compara pelo PREFIXO estável de 8 caracteres derivado do
+    /// `localIdentifier` (não pelo nome completo do arquivo), então funciona
+    /// independente do formato de exportação usado quando o item foi
+    /// copiado originalmente — que pode ter mudado desde então.
+    ///
+    /// Pode ser lento em bibliotecas grandes (enumera a pasta inteira) —
+    /// chamar sob demanda, nunca automaticamente.
+    func verificarConsistencia(folderName: String) async throws -> [String] {
+        let destino = try resolverPastaDestino(folderName: folderName)
+        guard destino.startAccessingSecurityScopedResource() else {
+            throw SyncError.pastaExternaInacessivel
+        }
+        defer { destino.stopAccessingSecurityScopedResource() }
+
+        var prefixosPresentes = Set<String>()
+        if let enumerador = FileManager.default.enumerator(
+            at: destino,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) {
+            for case let url as URL in enumerador {
+                let nome = url.lastPathComponent
+                if let corte = nome.firstIndex(of: "_") {
+                    prefixosPresentes.insert(String(nome[nome.startIndex..<corte]))
                 }
             }
         }
-        return total
+
+        let idsRastreados = await tracker.todosOsIDs
+        return idsRastreados.filter { !prefixosPresentes.contains(Self.prefixoEstavel(para: $0)) }
+    }
+
+    // MARK: - Livro-razão salvo dentro da pasta de destino (exportar/adotar)
+
+    /// Nome do arquivo OCULTO (prefixo ".") onde uma cópia do livro-razão é
+    /// salva dentro da própria pasta de destino — não conta no "Tamanho do
+    /// backup" (`StorageInfo.tamanhoTotal` já ignora ocultos) nem confunde a
+    /// verificação de consistência (não bate nenhum prefixo de 8 caracteres).
+    private static let nomeArquivoLedgerNoDestino = ".iAmaury_ledger.json"
+
+    /// Grava uma cópia do livro-razão (conjunto de `localIdentifier`s já
+    /// sincronizados) DENTRO da própria pasta de destino. Permite "adotar"
+    /// o backup rapidamente a partir de outra instalação do app — cenário
+    /// comum em sideload: reinstalar após a assinatura da AltStore expirar
+    /// sem renovar a tempo, ou trocar de aparelho — sem reprocessar a
+    /// biblioteca inteira para reconstruir o estado.
+    ///
+    /// Best-effort por natureza: chamar SEMPRE depois de uma sincronização
+    /// já concluída com sucesso, nunca antes; uma falha aqui não deve
+    /// comprometer nem repetir o resultado da cópia em si.
+    func exportarLedgerParaDestino(folderName: String, tracker: PhotoTracker) async throws {
+        let destino = try resolverPastaDestino(folderName: folderName)
+        guard destino.startAccessingSecurityScopedResource() else {
+            throw SyncError.pastaExternaInacessivel
+        }
+        defer { destino.stopAccessingSecurityScopedResource() }
+
+        let ids = await tracker.todosOsIDs
+        let dados = try JSONEncoder().encode(ids)
+        let url = destino.appendingPathComponent(Self.nomeArquivoLedgerNoDestino, isDirectory: false)
+        try dados.write(to: url, options: [.atomic])
+    }
+
+    /// Lê o livro-razão salvo dentro da pasta de destino ATUAL (se houver) e
+    /// funde os identificadores nele com o `tracker` informado — só
+    /// ACRESCENTA, nunca remove (coerente com o livro-razão "só crescer").
+    ///
+    /// - Returns: quantos identificadores eram novos. `0` tanto quando não
+    ///   há nada de novo quanto quando não existe nenhum ledger salvo ali
+    ///   ainda (backup feito antes deste recurso existir, ou pasta nova) —
+    ///   não é tratado como erro.
+    @discardableResult
+    func adotarLedgerDoDestino(folderName: String, tracker: PhotoTracker) async throws -> Int {
+        let destino = try resolverPastaDestino(folderName: folderName)
+        guard destino.startAccessingSecurityScopedResource() else {
+            throw SyncError.pastaExternaInacessivel
+        }
+        defer { destino.stopAccessingSecurityScopedResource() }
+
+        let url = destino.appendingPathComponent(Self.nomeArquivoLedgerNoDestino, isDirectory: false)
+        guard let dados = try? Data(contentsOf: url),
+              let ids = try? JSONDecoder().decode(Set<String>.self, from: dados) else {
+            return 0
+        }
+        return try await tracker.adotar(ids)
     }
 
     /// Remove caracteres inválidos e espaços das pontas do nome da pasta,
@@ -225,19 +326,77 @@ actor PhotoSyncEngine {
 
     // MARK: - Busca de assets
 
-    /// Busca todos os assets (fotos e vídeos) ordenados por data de criação
-    /// (ascendente — dos mais antigos aos mais novos).
-    private func buscarAssets() -> PHFetchResult<PHAsset> {
+    /// Busca os assets (fotos e vídeos) que atendem ao `filtro`, ordenados
+    /// por data de criação (ascendente — dos mais antigos aos mais novos).
+    ///
+    /// Sem filtro de álbum: uma única busca na galeria inteira (rápida, via
+    /// `PHFetchOptions.predicate` para a data mínima). Com álbuns
+    /// selecionados: busca dentro de cada coleção e une os resultados,
+    /// descartando duplicatas (um asset pode estar em mais de um álbum
+    /// escolhido).
+    private func buscarAssets(filtro: SyncFiltro) -> [PHAsset] {
         let opcoes = PHFetchOptions()
         opcoes.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: true)]
-        // Não filtramos por mediaType: queremos imagens E vídeos.
-        return PHAsset.fetchAssets(with: opcoes)
+        if let dataMinima = filtro.dataMinima {
+            opcoes.predicate = NSPredicate(format: "creationDate >= %@", dataMinima as NSDate)
+        }
+
+        guard !filtro.albunsSelecionados.isEmpty else {
+            // Não filtramos por mediaType: queremos imagens E vídeos.
+            return Self.paraArray(PHAsset.fetchAssets(with: opcoes))
+        }
+
+        let colecoes = PHAssetCollection.fetchAssetCollections(
+            withLocalIdentifiers: filtro.albunsSelecionados, options: nil
+        )
+        var vistos = Set<String>()
+        var resultado: [PHAsset] = []
+        colecoes.enumerateObjects { colecao, _, _ in
+            PHAsset.fetchAssets(in: colecao, options: opcoes).enumerateObjects { asset, _, _ in
+                if vistos.insert(asset.localIdentifier).inserted {
+                    resultado.append(asset)
+                }
+            }
+        }
+        resultado.sort { ($0.creationDate ?? .distantPast) < ($1.creationDate ?? .distantPast) }
+        return resultado
     }
 
-    /// Conta o total de itens atualmente na galeria (fotos + vídeos).
+    private static func paraArray(_ resultado: PHFetchResult<PHAsset>) -> [PHAsset] {
+        var array: [PHAsset] = []
+        array.reserveCapacity(resultado.count)
+        resultado.enumerateObjects { asset, _, _ in array.append(asset) }
+        return array
+    }
+
+    /// Conta o total de itens que atendem ao filtro (fotos + vídeos).
     /// Exposto para o ViewModel atualizar o contador do dashboard.
-    func contarAssetsNaGaleria() -> Int {
-        buscarAssets().count
+    func contarAssetsNaGaleria(filtro: SyncFiltro = .semFiltro) -> Int {
+        buscarAssets(filtro: filtro).count
+    }
+
+    /// Lista os álbuns disponíveis para o filtro de conteúdo: os álbuns
+    /// criados pelo usuário e os dois álbuns inteligentes mais relevantes
+    /// para excluir do backup (Câmera, como referência do "tudo", e
+    /// Screenshots). Omite álbuns vazios. Requer autorização de Fotos já
+    /// concedida — chamado só a partir da tela de filtro, que só é
+    /// alcançável depois da permissão já ter sido pedida.
+    func listarAlbuns() -> [AlbumInfo] {
+        var resultado: [AlbumInfo] = []
+        func adicionar(_ colecoes: PHFetchResult<PHAssetCollection>) {
+            colecoes.enumerateObjects { colecao, _, _ in
+                let quantidade = PHAsset.fetchAssets(in: colecao, options: nil).count
+                guard quantidade > 0, let titulo = colecao.localizedTitle else { return }
+                resultado.append(AlbumInfo(id: colecao.localIdentifier, titulo: titulo, quantidade: quantidade))
+            }
+        }
+        adicionar(PHAssetCollection.fetchAssetCollections(
+            with: .smartAlbum, subtype: .smartAlbumUserLibrary, options: nil))
+        adicionar(PHAssetCollection.fetchAssetCollections(
+            with: .smartAlbum, subtype: .smartAlbumScreenshots, options: nil))
+        adicionar(PHAssetCollection.fetchAssetCollections(
+            with: .album, subtype: .albumRegular, options: nil))
+        return resultado
     }
 
     // MARK: - Execução principal
@@ -247,6 +406,14 @@ actor PhotoSyncEngine {
     /// - Parameters:
     ///   - folderName: nome da pasta de destino (dentro de Documents do app).
     ///   - formato: `.original` (dados brutos) ou `.compativel` (JPEG/MP4).
+    ///   - filtro: quais assets considerar (álbuns/data mínima). Padrão: toda
+    ///     a galeria.
+    ///   - limiteItemBytesForaDoWifi: quando informado e `emWifi == false`,
+    ///     itens maiores que o limite ficam PENDENTES (não contam como
+    ///     falha) em vez de consumir dados móveis — tentados de novo numa
+    ///     próxima passada, idealmente em Wi-Fi.
+    ///   - emWifi: rede atual no momento desta chamada. Irrelevante se
+    ///     `limiteItemBytesForaDoWifi` for `nil`.
     ///   - progresso: callback chamado a cada asset PROCESSADO (sucesso ou
     ///     falha) com `(processados, totalPendente)`. Sempre invocado fora do actor.
     /// - Returns: `ResultadoSync` com a contagem de itens copiados e de falhas.
@@ -257,6 +424,9 @@ actor PhotoSyncEngine {
     func sync(
         folderName: String,
         formato: ExportFormat = SyncConfig.formatoPadrao,
+        filtro: SyncFiltro = .semFiltro,
+        limiteItemBytesForaDoWifi: Int64? = nil,
+        emWifi: Bool = true,
         progresso: @Sendable (Int, Int) -> Void = { _, _ in }
     ) async throws -> ResultadoSync {
         resetarCancelamento()
@@ -276,14 +446,14 @@ actor PhotoSyncEngine {
         }
         defer { destino.stopAccessingSecurityScopedResource() }
 
-        // 2. Levanta os assets e calcula quantos ainda estão pendentes, para que a
-        //    barra de progresso reflita apenas o trabalho real desta execução.
-        let assets = buscarAssets()
+        // 2. Levanta os assets (já filtrados) e calcula quantos ainda estão
+        //    pendentes, para que a barra de progresso reflita apenas o
+        //    trabalho real desta execução.
+        let assets = buscarAssets(filtro: filtro)
         var pendentes: [PHAsset] = []
         pendentes.reserveCapacity(assets.count)
 
-        for indice in 0..<assets.count {
-            let asset = assets.object(at: indice)
+        for asset in assets {
             let jaFeito = await tracker.isSynced(asset.localIdentifier)
             if !jaFeito {
                 pendentes.append(asset)
@@ -304,6 +474,15 @@ actor PhotoSyncEngine {
             // Cancelamento cooperativo (ex.: expiração da BG task).
             if cancelado { throw SyncError.cancelada }
 
+            // Limite de tamanho por item fora do Wi-Fi: item grande demais
+            // fica PENDENTE (não é falha) até uma passada em Wi-Fi.
+            if !emWifi, let limite = limiteItemBytesForaDoWifi,
+               Self.tamanhoEstimado(asset) > limite {
+                processados += 1
+                progresso(processados, total)
+                continue
+            }
+
             do {
                 let nomes = try await exportarAsset(asset, para: destino, formato: formato)
                 // Só marca no livro-razão APÓS a escrita coordenada bem-sucedida.
@@ -322,6 +501,41 @@ actor PhotoSyncEngine {
             enviados: enviados, falhas: falhas,
             caminhosRelativosCopiados: caminhosRelativosCopiados
         )
+    }
+
+    // MARK: - Verificação de integridade (arquivos já existentes no destino)
+
+    /// Tamanho atual (em bytes) de um arquivo no disco, ou `nil` se não
+    /// existir ou não puder ser lido.
+    private func tamanhoEmDisco(_ url: URL) -> Int64? {
+        guard let atributos = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let tamanho = atributos[.size] as? NSNumber else {
+            return nil
+        }
+        return tamanho.int64Value
+    }
+
+    /// Decide se um arquivo já existente no destino pode ser tratado como
+    /// cópia válida (o motor pula a reexportação): existe E o tamanho bate
+    /// com o registrado na última escrita bem-sucedida (`FileSizeTracker`).
+    ///
+    /// Sem registro anterior — caso de backups feitos antes deste recurso
+    /// existir — confia na simples existência, como sempre foi: evita forçar
+    /// uma reexportação em massa da biblioteca inteira só por causa desta
+    /// atualização do app.
+    private func copiaValida(em destinoFinal: URL, nomeArquivo: String) async -> Bool {
+        guard FileManager.default.fileExists(atPath: destinoFinal.path) else { return false }
+        guard let esperado = await sizeTracker.esperado(paraArquivo: nomeArquivo) else {
+            return true
+        }
+        return tamanhoEmDisco(destinoFinal) == esperado
+    }
+
+    /// Remove um arquivo inválido/truncado antes de regravá-lo, e esquece
+    /// seu registro de tamanho (será regravado após a nova escrita).
+    private func removerCopiaInvalida(em destinoFinal: URL, nomeArquivo: String) async {
+        try? FileManager.default.removeItem(at: destinoFinal)
+        await sizeTracker.esquecer(arquivo: nomeArquivo)
     }
 
     // MARK: - Exportação de um asset (dispatcher por formato)
@@ -374,12 +588,16 @@ actor PhotoSyncEngine {
             let nomeArquivo = "\(prefixo)_\(recurso.originalFilename)"
             let destinoFinal = destino.appendingPathComponent(nomeArquivo, isDirectory: false)
 
-            // Idempotência: se o arquivo já existe no destino, não reescreve. Isso
-            // reforça o one-way (nunca sobrescrevemos/removemos cópias existentes).
-            if FileManager.default.fileExists(atPath: destinoFinal.path) {
+            // Idempotência: se o arquivo já existe no destino E o tamanho bate com
+            // o que foi gravado da última vez, não reescreve — reforça o one-way
+            // (nunca sobrescrevemos/removemos cópias VÁLIDAS existentes). Um
+            // tamanho divergente indica cópia truncada (queda de energia, app
+            // encerrado no meio da escrita) — nesse caso, remove e regrava.
+            if await copiaValida(em: destinoFinal, nomeArquivo: nomeArquivo) {
                 nomesGravados.append(nomeArquivo)
                 continue
             }
+            await removerCopiaInvalida(em: destinoFinal, nomeArquivo: nomeArquivo)
 
             // 3a. Escreve os dados originais em um arquivo TEMPORÁRIO local.
             //     writeData(for:toFile:) faz streaming para disco — não carrega
@@ -392,6 +610,9 @@ actor PhotoSyncEngine {
             // 3b. Move o arquivo temporário para a pasta de destino (escrita coordenada),
             //     preservando a data original da foto/vídeo (não a data do backup).
             try coordenarMovimento(de: tempURL, para: destinoFinal, dataOriginal: asset.creationDate)
+            if let tamanhoFinal = tamanhoEmDisco(destinoFinal) {
+                await sizeTracker.registrar(arquivo: nomeArquivo, tamanho: tamanhoFinal)
+            }
             nomesGravados.append(nomeArquivo)
         }
 
@@ -435,22 +656,31 @@ actor PhotoSyncEngine {
         case .image:
             let nomeArquivo = "\(prefixo)_\(base).jpg"
             let destinoFinal = destino.appendingPathComponent(nomeArquivo, isDirectory: false)
-            // Idempotência: nunca reescreve nem toca em cópia existente (one-way).
-            if FileManager.default.fileExists(atPath: destinoFinal.path) { return [nomeArquivo] }
+            // Idempotência: nunca reescreve cópia VÁLIDA existente (one-way). Um
+            // tamanho divergente do registrado indica truncamento — regrava.
+            if await copiaValida(em: destinoFinal, nomeArquivo: nomeArquivo) { return [nomeArquivo] }
+            await removerCopiaInvalida(em: destinoFinal, nomeArquivo: nomeArquivo)
 
             let jpeg = try await obterJPEGCompativel(asset)
             try gravarDados(jpeg, em: destinoFinal, nomeTemp: "\(base).jpg", dataOriginal: asset.creationDate)
+            if let tamanhoFinal = tamanhoEmDisco(destinoFinal) {
+                await sizeTracker.registrar(arquivo: nomeArquivo, tamanho: tamanhoFinal)
+            }
             return [nomeArquivo]
 
         case .video:
             let nomeArquivo = "\(prefixo)_\(base).mp4"
             let destinoFinal = destino.appendingPathComponent(nomeArquivo, isDirectory: false)
-            if FileManager.default.fileExists(atPath: destinoFinal.path) { return [nomeArquivo] }
+            if await copiaValida(em: destinoFinal, nomeArquivo: nomeArquivo) { return [nomeArquivo] }
+            await removerCopiaInvalida(em: destinoFinal, nomeArquivo: nomeArquivo)
 
             let tempURL = FileManager.default.temporaryDirectory
                 .appendingPathComponent(UUID().uuidString + "_" + base + ".mp4")
             try await exportarVideoH264(asset, paraArquivo: tempURL)
             try coordenarMovimento(de: tempURL, para: destinoFinal, dataOriginal: asset.creationDate)
+            if let tamanhoFinal = tamanhoEmDisco(destinoFinal) {
+                await sizeTracker.registrar(arquivo: nomeArquivo, tamanho: tamanhoFinal)
+            }
             return [nomeArquivo]
 
         default:
