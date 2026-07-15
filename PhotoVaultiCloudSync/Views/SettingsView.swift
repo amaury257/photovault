@@ -176,6 +176,20 @@ struct SettingsView: View {
                 }
 
                 Section {
+                    Toggle("Incluir álbuns compartilhados", isOn: $vm.incluirCompartilhados)
+                        .onChange(of: vm.incluirCompartilhados) { _ in
+                            vm.salvarIncluirCompartilhados()
+                        }
+                } header: {
+                    Text("Escopo do backup")
+                } footer: {
+                    Text("Por padrão, o backup cobre apenas a sua própria biblioteca (igual à "
+                        + "Fototeca do iOS). Ao ligar isto, as mídias de álbuns compartilhados do "
+                        + "iCloud também são copiadas, em uma subpasta \"Compartilhados\" criada "
+                        + "automaticamente dentro da pasta de destino — separadas das suas fotos.")
+                }
+
+                Section {
                     LabeledContent("Caminho atual", value: vm.caminhoExibicao)
                 } header: {
                     Text("Informações")

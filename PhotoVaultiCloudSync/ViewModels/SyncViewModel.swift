@@ -78,6 +78,12 @@ final class SyncViewModel: ObservableObject {
     /// FORA do Wi-Fi. `nil` = sem limite.
     @Published private(set) var limiteItemBytesForaDoWifi: Int64?
 
+    /// `true` = também faz backup de mídias de **álbuns compartilhados do
+    /// iCloud** (numa subpasta "Compartilhados"). Padrão `false` (só a
+    /// biblioteca do usuário). A View persiste via `.onChange` chamando
+    /// `salvarIncluirCompartilhados()`.
+    @Published var incluirCompartilhados: Bool
+
     // MARK: - Dependências
 
     private let engine: PhotoSyncEngine
@@ -143,6 +149,17 @@ final class SyncViewModel: ObservableObject {
         // Limite de tamanho por item fora do Wi-Fi — padrão: sem limite.
         let limiteSalvo = defaults.object(forKey: SyncConfig.DefaultsKey.limiteItemBytesForaDoWifi) as? Int64
         self.limiteItemBytesForaDoWifi = limiteSalvo
+
+        // Escopo do backup: por padrão só a biblioteca do usuário (opt-in para
+        // incluir os álbuns compartilhados).
+        self.incluirCompartilhados = defaults.bool(forKey: SyncConfig.DefaultsKey.includeShared)
+    }
+
+    /// Persiste a preferência de incluir compartilhados e a propaga ao
+    /// gerenciador de background. Chamado pela View via `.onChange`.
+    func salvarIncluirCompartilhados() {
+        defaults.set(incluirCompartilhados, forKey: SyncConfig.DefaultsKey.includeShared)
+        BackgroundSyncManager.shared.atualizarIncluirCompartilhados(incluirCompartilhados)
     }
 
     /// Persiste as preferências de agendamento e propaga ao gerenciador de
@@ -180,7 +197,8 @@ final class SyncViewModel: ObservableObject {
         // apenas por abrir a tela).
         let auth = PHPhotoLibrary.authorizationStatus(for: .readWrite)
         if auth == .authorized || auth == .limited {
-            novoStats.totalNaGaleria = await engine.contarAssetsNaGaleria(filtro: filtro)
+            novoStats.totalNaGaleria = await engine.contarAssetsNaGaleria(
+                filtro: filtro, incluirCompartilhados: incluirCompartilhados)
         }
 
         stats = novoStats
@@ -209,7 +227,8 @@ final class SyncViewModel: ObservableObject {
             let resultado = try await engine.sync(
                 folderName: folderName,
                 formato: exportFormat,
-                filtro: filtro
+                filtro: filtro,
+                incluirCompartilhados: incluirCompartilhados
             ) { [weak self] feitos, total in
                 Task { @MainActor in
                     self?.status = .syncing(enviados: feitos, total: total)
@@ -222,7 +241,8 @@ final class SyncViewModel: ObservableObject {
             var novoStats = stats
             novoStats.ultimaSync = agora
             novoStats.totalBackupFeito = await tracker.syncedCount
-            novoStats.totalNaGaleria = await engine.contarAssetsNaGaleria(filtro: filtro)
+            novoStats.totalNaGaleria = await engine.contarAssetsNaGaleria(
+                filtro: filtro, incluirCompartilhados: incluirCompartilhados)
             stats = novoStats
 
             ultimoResultado = resultado
@@ -354,7 +374,7 @@ final class SyncViewModel: ObservableObject {
     /// o backup incompleto ou em formato Compatível). Pode ser lento em
     /// bibliotecas grandes (itera todos os assets).
     func tamanhoTotalGaleria() async -> Int64 {
-        await engine.tamanhoTotalGaleria(filtro: filtro)
+        await engine.tamanhoTotalGaleria(filtro: filtro, incluirCompartilhados: incluirCompartilhados)
     }
 
     // MARK: - Filtro de conteúdo (álbuns, data mínima, limite fora do Wi-Fi)

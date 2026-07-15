@@ -203,8 +203,8 @@ actor PhotoSyncEngine {
     ///
     /// Pode ser lento em bibliotecas grandes (itera todos os assets) —
     /// chamar sob demanda, nunca automaticamente.
-    func tamanhoTotalGaleria(filtro: SyncFiltro = .semFiltro) -> Int64 {
-        buscarAssets(filtro: filtro).reduce(into: Int64(0)) { total, asset in
+    func tamanhoTotalGaleria(filtro: SyncFiltro = .semFiltro, incluirCompartilhados: Bool = false) -> Int64 {
+        buscarAssets(filtro: filtro, incluirCompartilhados: incluirCompartilhados).reduce(into: Int64(0)) { total, asset in
             total += Self.tamanhoEstimado(asset)
         }
     }
@@ -331,6 +331,11 @@ actor PhotoSyncEngine {
 
     // MARK: - Busca de assets
 
+    /// Nome da subpasta de destino onde as mídias de **álbuns compartilhados**
+    /// são gravadas (separadas das fotos do próprio usuário), quando o usuário
+    /// opta por incluí-las. Criada automaticamente dentro da pasta de destino.
+    static let subpastaCompartilhados = "Compartilhados"
+
     /// Busca os assets (fotos e vídeos) que atendem ao `filtro`, ordenados
     /// por data de criação (ascendente — dos mais antigos aos mais novos).
     ///
@@ -339,15 +344,33 @@ actor PhotoSyncEngine {
     /// selecionados: busca dentro de cada coleção e une os resultados,
     /// descartando duplicatas (um asset pode estar em mais de um álbum
     /// escolhido).
-    private func buscarAssets(filtro: SyncFiltro) -> [PHAsset] {
+    private func buscarAssets(filtro: SyncFiltro, incluirCompartilhados: Bool = false) -> [PHAsset] {
         let opcoes = PHFetchOptions()
         opcoes.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: true)]
+
+        // Só fotos e vídeos — descarta áudio e tipos `unknown`, que uma fetch
+        // sem filtro traria e inflavam a contagem (ex.: 772 vs 746 da Fototeca).
+        // Combinado (AND) com o filtro de data mínima, quando houver.
+        var predicados: [NSPredicate] = [
+            NSPredicate(format: "mediaType == %d OR mediaType == %d",
+                        PHAssetMediaType.image.rawValue, PHAssetMediaType.video.rawValue)
+        ]
         if let dataMinima = filtro.dataMinima {
-            opcoes.predicate = NSPredicate(format: "creationDate >= %@", dataMinima as NSDate)
+            predicados.append(NSPredicate(format: "creationDate >= %@", dataMinima as NSDate))
         }
+        opcoes.predicate = predicados.count == 1
+            ? predicados[0]
+            : NSCompoundPredicate(andPredicateWithSubpredicates: predicados)
+
+        // Escopo de fontes: por padrão só a biblioteca do próprio usuário (a
+        // contagem bate com a Fototeca). `incluirCompartilhados` soma os álbuns
+        // compartilhados do iCloud; a sincronização por iTunes fica sempre fora.
+        opcoes.includeAssetSourceTypes = incluirCompartilhados
+            ? [.typeUserLibrary, .typeCloudShared]
+            : [.typeUserLibrary]
+        opcoes.includeHiddenAssets = false
 
         guard !filtro.albunsSelecionados.isEmpty else {
-            // Não filtramos por mediaType: queremos imagens E vídeos.
             return Self.paraArray(PHAsset.fetchAssets(with: opcoes))
         }
 
@@ -376,8 +399,8 @@ actor PhotoSyncEngine {
 
     /// Conta o total de itens que atendem ao filtro (fotos + vídeos).
     /// Exposto para o ViewModel atualizar o contador do dashboard.
-    func contarAssetsNaGaleria(filtro: SyncFiltro = .semFiltro) -> Int {
-        buscarAssets(filtro: filtro).count
+    func contarAssetsNaGaleria(filtro: SyncFiltro = .semFiltro, incluirCompartilhados: Bool = false) -> Int {
+        buscarAssets(filtro: filtro, incluirCompartilhados: incluirCompartilhados).count
     }
 
     /// Lista os álbuns disponíveis para o filtro de conteúdo: os álbuns
@@ -430,6 +453,7 @@ actor PhotoSyncEngine {
         folderName: String,
         formato: ExportFormat = SyncConfig.formatoPadrao,
         filtro: SyncFiltro = .semFiltro,
+        incluirCompartilhados: Bool = false,
         limiteItemBytesForaDoWifi: Int64? = nil,
         emWifi: Bool = true,
         progresso: @Sendable (Int, Int) -> Void = { _, _ in }
@@ -451,10 +475,16 @@ actor PhotoSyncEngine {
         }
         defer { destino.stopAccessingSecurityScopedResource() }
 
+        // Subpasta dos compartilhados criada de forma preguiçosa (só quando o
+        // primeiro asset compartilhado for gravado) — evita criar pasta vazia.
+        let destinoCompartilhados = destino.appendingPathComponent(
+            Self.subpastaCompartilhados, isDirectory: true)
+        var subpastaCompartilhadosCriada = false
+
         // 2. Levanta os assets (já filtrados) e calcula quantos ainda estão
         //    pendentes, para que a barra de progresso reflita apenas o
         //    trabalho real desta execução.
-        let assets = buscarAssets(filtro: filtro)
+        let assets = buscarAssets(filtro: filtro, incluirCompartilhados: incluirCompartilhados)
         var pendentes: [PHAsset] = []
         pendentes.reserveCapacity(assets.count)
 
@@ -488,12 +518,27 @@ actor PhotoSyncEngine {
                 continue
             }
 
+            // Assets de álbum compartilhado vão para a subpasta "Compartilhados";
+            // os demais, direto na raiz do destino.
+            let ehCompartilhado = asset.sourceType.contains(.typeCloudShared)
+            let destinoAsset = ehCompartilhado ? destinoCompartilhados : destino
+            let prefixoRelativo = ehCompartilhado ? "\(Self.subpastaCompartilhados)/" : ""
+
             do {
-                let nomes = try await exportarAsset(asset, para: destino, formato: formato)
+                // Cria a subpasta de compartilhados sob demanda, na primeira vez.
+                if ehCompartilhado && !subpastaCompartilhadosCriada {
+                    try FileManager.default.createDirectory(
+                        at: destinoCompartilhados, withIntermediateDirectories: true)
+                    subpastaCompartilhadosCriada = true
+                }
+
+                let nomes = try await exportarAsset(asset, para: destinoAsset, formato: formato)
                 // Só marca no livro-razão APÓS a escrita coordenada bem-sucedida.
                 try await tracker.markSynced(asset.localIdentifier)
                 enviados += 1
-                caminhosRelativosCopiados.append(contentsOf: nomes)
+                // Prefixa com "Compartilhados/" para a verificação de upload no
+                // iCloud resolver o caminho correto dentro do destino.
+                caminhosRelativosCopiados.append(contentsOf: nomes.map { prefixoRelativo + $0 })
             } catch {
                 falhas += 1
             }

@@ -70,6 +70,11 @@ final class BackgroundSyncManager {
     /// `atualizarLimiteItemForaDoWifi(_:)`. `nil` = sem limite.
     private var limiteItemBytesForaDoWifi: Int64?
 
+    /// `true` = também faz backup de mídias de álbuns compartilhados do iCloud
+    /// (subpasta "Compartilhados"). Padrão `false`. Mantido em sincronia com as
+    /// Configurações via `atualizarIncluirCompartilhados(_:)`.
+    private var incluirCompartilhados: Bool
+
     private init() {
         let tracker = PhotoTracker()
         self.tracker = tracker
@@ -97,6 +102,7 @@ final class BackgroundSyncManager {
         self.limiteItemBytesForaDoWifi = defaults.object(
             forKey: SyncConfig.DefaultsKey.limiteItemBytesForaDoWifi
         ) as? Int64
+        self.incluirCompartilhados = defaults.bool(forKey: SyncConfig.DefaultsKey.includeShared)
     }
 
     /// Expõe o tracker/engine para reuso pelo ViewModel (fonte única de verdade).
@@ -122,6 +128,11 @@ final class BackgroundSyncManager {
     /// Mantém o limite de tamanho por item fora do Wi-Fi atualizado.
     func atualizarLimiteItemForaDoWifi(_ novoLimite: Int64?) {
         limiteItemBytesForaDoWifi = novoLimite
+    }
+
+    /// Mantém a preferência de incluir compartilhados atualizada.
+    func atualizarIncluirCompartilhados(_ novoValor: Bool) {
+        incluirCompartilhados = novoValor
     }
 
     /// Atualiza as preferências de agendamento e reagenda (ou cancela) a
@@ -260,7 +271,7 @@ final class BackgroundSyncManager {
 
         // Dispara o trabalho assíncrono. Guardamos a referência para poder cancelar
         // caso o sistema sinalize expiração do tempo disponível.
-        let trabalho = Task { [engine, folderName, formato, somenteWifi, filtro, limiteItemBytesForaDoWifi, log] in
+        let trabalho = Task { [engine, folderName, formato, somenteWifi, filtro, incluirCompartilhados, limiteItemBytesForaDoWifi, log] in
             // Determina o tipo de rede uma única vez — usado tanto para a
             // preferência "Somente Wi-Fi" quanto para o limite de tamanho
             // por item fora do Wi-Fi.
@@ -278,6 +289,7 @@ final class BackgroundSyncManager {
             do {
                 let resultado = try await engine.sync(
                     folderName: folderName, formato: formato, filtro: filtro,
+                    incluirCompartilhados: incluirCompartilhados,
                     limiteItemBytesForaDoWifi: limiteItemBytesForaDoWifi, emWifi: emWifi
                 )
                 // Registra a data da última sync bem-sucedida.

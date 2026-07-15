@@ -350,6 +350,12 @@ enum SyncConfig {
         // ---- Limite de tamanho por item fora do Wi-Fi ----
         /// Bytes (Int64). Ausente/nil = sem limite.
         static let limiteItemBytesForaDoWifi = "pv.limiteItemBytesForaDoWifi"
+
+        // ---- Escopo do backup ----
+        /// `true` = também faz backup de mídias de álbuns compartilhados do
+        /// iCloud (em uma subpasta "Compartilhados"). Padrão `false` (só a
+        /// biblioteca do próprio usuário).
+        static let includeShared = "pv.includeShared"
     }
 
     /// Nome do arquivo do livro-razão (ledger) em Application Support.
