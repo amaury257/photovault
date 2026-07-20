@@ -21,6 +21,7 @@
 import Foundation
 import BackgroundTasks
 import Network
+import UIKit
 import os
 
 /// Coordena o registro e o agendamento da tarefa de backup em background.
@@ -74,6 +75,14 @@ final class BackgroundSyncManager {
     /// (subpasta "Compartilhados"). Padrão `false`. Mantido em sincronia com as
     /// Configurações via `atualizarIncluirCompartilhados(_:)`.
     private var incluirCompartilhados: Bool
+
+    /// Identificador do "tempo extra" concedido pelo sistema (via
+    /// `beginBackgroundTask`) enquanto uma sincronização MANUAL está em
+    /// andamento no momento em que o app vai para segundo plano — dá alguns
+    /// segundos adicionais de execução real para ela avançar antes do
+    /// processo ser suspenso. Diferente do `BGProcessingTask`, que só roda
+    /// numa passada FUTURA agendada pelo sistema (pode demorar).
+    private var backgroundTaskID: UIBackgroundTaskIdentifier = .invalid
 
     private init() {
         let tracker = PhotoTracker()
@@ -221,6 +230,58 @@ final class BackgroundSyncManager {
             }
 
             task.setTaskCompleted(success: true)
+        }
+    }
+
+    // MARK: - Continuação imediata (sync manual interrompida ao minimizar)
+
+    /// Solicita tempo extra de execução ao sistema para uma sincronização
+    /// MANUAL em andamento continuar avançando por mais alguns segundos após
+    /// o app ser minimizado, em vez de congelar imediatamente. Chamado pelo
+    /// `MainApp` ao detectar a transição para `.background` enquanto
+    /// `status.estaSincronizando` é `true`.
+    func solicitarTempoExtra() {
+        guard backgroundTaskID == .invalid else { return }
+        backgroundTaskID = UIApplication.shared.beginBackgroundTask(
+            withName: "com.photovault.sync.continuacao"
+        ) { [weak self] in
+            guard let self else { return }
+            UIApplication.shared.endBackgroundTask(self.backgroundTaskID)
+            self.backgroundTaskID = .invalid
+        }
+    }
+
+    /// Libera o tempo extra solicitado — chamado ao voltar para o primeiro
+    /// plano. Sem isso, o app fica marcado como "em background task" até o
+    /// sistema encerrar à força, o que pode penalizar futuras concessões.
+    func liberarTempoExtra() {
+        guard backgroundTaskID != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(backgroundTaskID)
+        backgroundTaskID = .invalid
+    }
+
+    /// Agenda uma continuação da sincronização O MAIS CEDO POSSÍVEL
+    /// (`earliestBeginDate = nil`), **independente** do toggle "Agendamento
+    /// automático". Diferente de `scheduleProcessing()` — que só agenda a
+    /// passada NOTURNA opcional, e só quando o usuário ligou esse recurso —
+    /// esta função cobre um caso mais básico: "termine o backup que já
+    /// começou", que deve funcionar sempre, mesmo com o agendamento
+    /// desligado. Chamada quando o app minimiza com uma sync em andamento
+    /// ou com pendências detectadas (`SyncViewModel.temPendenciasDeSync`).
+    func agendarContinuacaoUrgente() {
+        BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: SyncConfig.bgTaskIdentifier)
+
+        let request = BGProcessingTaskRequest(identifier: SyncConfig.bgTaskIdentifier)
+        request.requiresExternalPower = false
+        request.requiresNetworkConnectivity = true
+        // earliestBeginDate = nil → "assim que possível", à discrição do iOS
+        // (ainda pondera bateria/uso recente, mas sem esperar um horário fixo).
+
+        do {
+            try BGTaskScheduler.shared.submit(request)
+            log.info("Continuação urgente da sincronização agendada (assim que possível).")
+        } catch {
+            log.error("Falha ao agendar continuação urgente: \(error.localizedDescription, privacy: .public)")
         }
     }
 

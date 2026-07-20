@@ -45,9 +45,26 @@ struct PhotoVaultApp: App {
                 }
         }
         .onChange(of: scenePhase) { novaFase in
-            // Ao ir para segundo plano, agenda a próxima passada de backup.
             if novaFase == .background {
+                // Se uma sincronização MANUAL está rodando neste exato momento,
+                // pede tempo extra ao sistema para ela avançar mais alguns
+                // segundos antes do processo ser suspenso (em vez de congelar
+                // imediatamente ao minimizar).
+                if viewModel.status.estaSincronizando {
+                    BackgroundSyncManager.shared.solicitarTempoExtra()
+                }
+                // "Termine o que já começou" precisa funcionar SEMPRE — mesmo
+                // com "Agendamento automático" desligado nas Configurações.
+                // Por isso agenda uma continuação urgente sempre que houver
+                // sync em andamento ou pendências, independente do toggle.
+                if viewModel.status.estaSincronizando || viewModel.temPendenciasDeSync {
+                    BackgroundSyncManager.shared.agendarContinuacaoUrgente()
+                }
+                // Mantém, à parte, o agendamento da passada NOTURNA opcional
+                // (só tem efeito se o usuário tiver ligado o agendamento).
                 BackgroundSyncManager.shared.scheduleProcessing()
+            } else if novaFase == .active {
+                BackgroundSyncManager.shared.liberarTempoExtra()
             }
         }
     }

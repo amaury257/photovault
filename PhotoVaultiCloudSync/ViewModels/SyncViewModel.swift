@@ -84,6 +84,15 @@ final class SyncViewModel: ObservableObject {
     /// `salvarIncluirCompartilhados()`.
     @Published var incluirCompartilhados: Bool
 
+    /// `true` quando há mais itens na galeria do que já enviados — sinaliza
+    /// trabalho pendente. Usado pelo `MainApp` ao detectar que o app foi
+    /// minimizado: se houver pendência (mesmo com "Agendamento automático"
+    /// desligado), agenda uma continuação urgente em background — ver
+    /// `BackgroundSyncManager.agendarContinuacaoUrgente()`.
+    var temPendenciasDeSync: Bool {
+        stats.totalNaGaleria > stats.totalBackupFeito
+    }
+
     // MARK: - Dependências
 
     private let engine: PhotoSyncEngine
