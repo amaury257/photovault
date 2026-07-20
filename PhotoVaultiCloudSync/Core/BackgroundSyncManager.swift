@@ -149,31 +149,97 @@ final class BackgroundSyncManager {
 
     // MARK: - Registro (chamado uma vez no launch)
 
-    /// Registra o handler da tarefa em background.
+    /// Registra AMBOS os handlers de tarefas em background.
     ///
     /// Precisa ser chamado ANTES de o app terminar de lançar. Registrar um
-    /// identificador não declarado no Info.plist causa crash — por isso ambos
-    /// usam `SyncConfig.bgTaskIdentifier`.
+    /// identificador não declarado no Info.plist causa crash.
+    /// Usa duas estratégias:
+    ///   - `BGProcessingTask` (pesada, só quando device ocioso + carregando + Wi-Fi)
+    ///   - `BGAppRefreshTask` (leve, rápida, em qualquer condição) — detecta que há
+    ///     pendências e agenda a BGProcessingTask ou faz mini-sync
     func registerTasks() {
+        // Tarefa pesada: sincronização completa
         BGTaskScheduler.shared.register(
             forTaskWithIdentifier: SyncConfig.bgTaskIdentifier,
-            using: nil // usa uma fila padrão gerenciada pelo sistema
+            using: nil
         ) { task in
             guard let processingTask = task as? BGProcessingTask else {
                 task.setTaskCompleted(success: false)
                 return
             }
-            // O launchHandler é invocado fora da main thread. Fazemos o hop
-            // explícito para a MainActor, pois `handleProcessing` (e o
-            // BGTaskScheduler) devem ser tocados a partir dela.
             Task { @MainActor in
                 BackgroundSyncManager.shared.handleProcessing(task: processingTask)
             }
         }
-        log.info("Tarefa em background registrada: \(SyncConfig.bgTaskIdentifier, privacy: .public)")
+
+        // Tarefa leve: detecção + agenda pesada
+        // Identificador: mesmo, mas com sufixo "refresh"
+        let refreshId = SyncConfig.bgTaskIdentifier + ".refresh"
+        BGTaskScheduler.shared.register(
+            forTaskWithIdentifier: refreshId,
+            using: nil
+        ) { task in
+            guard let refreshTask = task as? BGAppRefreshTask else {
+                task.setTaskCompleted(success: false)
+                return
+            }
+            Task { @MainActor in
+                BackgroundSyncManager.shared.handleRefresh(task: refreshTask)
+            }
+        }
+
+        log.info("Tarefas em background registradas: sync + refresh")
+
+        // Agenda a primeira execução da tarefa de refresh — ela roda em ~15 min
+        // e detecta pendências periodicamente.
+        scheduleRefresh()
+    }
+
+    // MARK: - Handlers das tarefas
+
+    /// Handler da tarefa de REFRESH (leve): detecta se há pendências e
+    /// agenda a tarefa pesada. Esta tarefa roda frequentemente, mesmo quando
+    /// o device não está ocioso — garante que a sincronização pesada seja
+    /// agendada regularmente.
+    private func handleRefresh(task: BGAppRefreshTask) {
+        log.info("Refresh leve iniciado — detectando se há pendências.")
+
+        // Agenda imediatamente a próxima execução leve (em ~15 min).
+        scheduleRefresh()
+
+        // Detecta se há pendências em background.
+        Task {
+            await tracker.load()
+            let hasPendencies = (UserDefaults.standard.stringArray(
+                forKey: SyncConfig.DefaultsKey.pendingUploadRelativePaths
+            ) ?? []).count > 0
+
+            if hasPendencies || await tracker.syncedCount == 0 {
+                self.log.debug("Pendências detectadas — agendando tarefa pesada.")
+                self.scheduleProcessing()
+            }
+
+            task.setTaskCompleted(success: true)
+        }
     }
 
     // MARK: - Agendamento
+
+    /// Agenda a próxima execução de REFRESH (tarefa leve).
+    /// Roda a cada ~15 minutos, mesmo que device não esteja ocioso.
+    private func scheduleRefresh() {
+        let refreshId = SyncConfig.bgTaskIdentifier + ".refresh"
+        BGTaskScheduler.shared.cancel(withIdentifier: refreshId)
+
+        let request = BGAppRefreshTaskRequest(identifier: refreshId)
+        request.earliestBeginDate = Date(timeIntervalSinceNow: 15 * 60) // ~15 min
+        do {
+            try BGTaskScheduler.shared.submit(request)
+            log.debug("Refresh agendado para ~15 minutos.")
+        } catch {
+            log.error("Falha ao agendar refresh: \(error.localizedDescription, privacy: .public)")
+        }
+    }
 
     /// Agenda a próxima execução de backup em segundo plano, respeitando o
     /// horário preferido do usuário — ou cancela qualquer agendamento
@@ -261,17 +327,26 @@ final class BackgroundSyncManager {
 
     // MARK: - Execução da tarefa
 
-    /// Manipula a execução da tarefa em background.
+    /// Manipula a execução da tarefa em background (pesada).
     private func handleProcessing(task: BGProcessingTask) {
         log.info("Backup em background iniciado.")
 
-        // Sempre reagende a PRÓXIMA execução logo no início, para manter a cadência
-        // mesmo que esta passada seja interrompida.
-        scheduleProcessing()
+        // ANTES de iniciar a Task, registra o expirationHandler — garante que
+        // será chamado se o iOS matar a tarefa inesperadamente.
+        var trabalho: Task<Void, Never>?
+        task.expirationHandler = {
+            self.log.warning("Backup em background expirou — cancelando.")
+            if let t = trabalho {
+                t.cancel()
+            }
+            // Reagenda imediatamente para continuar depois.
+            self.scheduleProcessing()
+            task.setTaskCompleted(success: false)
+        }
 
         // Dispara o trabalho assíncrono. Guardamos a referência para poder cancelar
         // caso o sistema sinalize expiração do tempo disponível.
-        let trabalho = Task { [engine, folderName, formato, somenteWifi, filtro, incluirCompartilhados, limiteItemBytesForaDoWifi, log] in
+        trabalho = Task { [engine, folderName, formato, somenteWifi, filtro, incluirCompartilhados, limiteItemBytesForaDoWifi, log] in
             // Determina o tipo de rede uma única vez — usado tanto para a
             // preferência "Somente Wi-Fi" quanto para o limite de tamanho
             // por item fora do Wi-Fi.
@@ -339,11 +414,8 @@ final class BackgroundSyncManager {
             }
         }
 
-        // O sistema chama este handler quando o tempo está acabando. Precisamos
-        // encerrar rápido: pedimos cancelamento cooperativo ao engine e à Task.
-        task.expirationHandler = {
-            Task { await self.engine.cancelar() }
-            trabalho.cancel()
-        }
+        // Reagenda a próxima execução ao final desta (bem-sucedida ou não).
+        // Isto garante que a cadência de sync se mantenha contínua.
+        scheduleProcessing()
     }
 }

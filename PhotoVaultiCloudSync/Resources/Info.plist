@@ -69,11 +69,13 @@
         <string>processing</string>
     </array>
 
-    <!-- ===== 4. Identificador permitido do BGTaskScheduler ============== -->
-    <!--   DEVE bater exatamente com SyncConfig.bgTaskIdentifier no código.   -->
+    <!-- ===== 4. Identificadores permitidos do BGTaskScheduler =========== -->
+    <!--   DEVEM bater exatamente com os identificadores no código.          -->
+    <!--   Dois identificadores: sync pesada + refresh leve.                  -->
     <key>BGTaskSchedulerPermittedIdentifiers</key>
     <array>
         <string>com.photovault.sync.processing</string>
+        <string>com.photovault.sync.processing.refresh</string>
     </array>
 
 </dict>
