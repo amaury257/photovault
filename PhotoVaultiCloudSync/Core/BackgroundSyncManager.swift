@@ -213,8 +213,9 @@ final class BackgroundSyncManager {
             let hasPendencies = (UserDefaults.standard.stringArray(
                 forKey: SyncConfig.DefaultsKey.pendingUploadRelativePaths
             ) ?? []).count > 0
+            let syncedCount = await tracker.syncedCount
 
-            if hasPendencies || await tracker.syncedCount == 0 {
+            if hasPendencies || syncedCount == 0 {
                 self.log.debug("Pendências detectadas — agendando tarefa pesada.")
                 self.scheduleProcessing()
             }
@@ -229,7 +230,7 @@ final class BackgroundSyncManager {
     /// Roda a cada ~15 minutos, mesmo que device não esteja ocioso.
     private func scheduleRefresh() {
         let refreshId = SyncConfig.bgTaskIdentifier + ".refresh"
-        BGTaskScheduler.shared.cancel(withIdentifier: refreshId)
+        BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: refreshId)
 
         let request = BGAppRefreshTaskRequest(identifier: refreshId)
         request.earliestBeginDate = Date(timeIntervalSinceNow: 15 * 60) // ~15 min
@@ -306,9 +307,12 @@ final class BackgroundSyncManager {
         await withCheckedContinuation { continuation in
             let monitor = NWPathMonitor()
             let fila = DispatchQueue(label: "com.photovault.sync.wifiCheck")
+            let lock = NSLock()
             var jaRespondeu = false
 
             monitor.pathUpdateHandler = { caminho in
+                lock.lock()
+                defer { lock.unlock() }
                 guard !jaRespondeu else { return }
                 jaRespondeu = true
                 monitor.cancel()
@@ -317,6 +321,8 @@ final class BackgroundSyncManager {
             monitor.start(queue: fila)
 
             fila.asyncAfter(deadline: .now() + 3) {
+                lock.lock()
+                defer { lock.unlock() }
                 guard !jaRespondeu else { return }
                 jaRespondeu = true
                 monitor.cancel()
