@@ -85,7 +85,7 @@ struct HistoryDetailView: View {
     // MARK: - Carregamento
 
     private func carregar() async {
-        let folderName = UserDefaults.standard.string(forKey: SyncConfig.DefaultsKey.folderName)
+        let folderName = SettingsStore.string(forKey: SyncConfig.DefaultsKey.folderName)
             ?? SyncConfig.nomePastaPadrao
         let engine = PhotoSyncEngine(tracker: PhotoTracker())
 

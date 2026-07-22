@@ -88,30 +88,30 @@ final class BackgroundSyncManager {
         let tracker = PhotoTracker()
         self.tracker = tracker
         self.engine = PhotoSyncEngine(tracker: tracker)
-        let defaults = UserDefaults.standard
+        // As configurações do usuário vêm de `SettingsStore` (Keychain, ver
+        // motivo detalhado no arquivo) — sobrevive a reinstalações via
+        // sideload, diferente de `UserDefaults` puro.
         // Lê a última pasta escolhida pelo usuário (ou o padrão).
-        self.folderName = defaults
+        self.folderName = SettingsStore
             .string(forKey: SyncConfig.DefaultsKey.folderName) ?? SyncConfig.nomePastaPadrao
         // Lê o último formato escolhido (ou o padrão).
-        self.formato = defaults
+        self.formato = SettingsStore
             .string(forKey: SyncConfig.DefaultsKey.exportFormat)
             .flatMap(ExportFormat.init(rawValue:)) ?? SyncConfig.formatoPadrao
         // Lê as preferências de agendamento (mesmos padrões do SyncViewModel).
-        self.scheduleEnabled = defaults.bool(forKey: SyncConfig.DefaultsKey.scheduleEnabled)
-        self.horaPreferida = defaults.object(forKey: SyncConfig.DefaultsKey.scheduleHour) as? Int ?? 3
-        self.minutoPreferido = defaults.object(forKey: SyncConfig.DefaultsKey.scheduleMinute) as? Int ?? 0
-        self.somenteWifi = defaults.object(forKey: SyncConfig.DefaultsKey.scheduleWifiOnly) as? Bool ?? true
+        self.scheduleEnabled = SettingsStore.bool(forKey: SyncConfig.DefaultsKey.scheduleEnabled) ?? false
+        self.horaPreferida = SettingsStore.integer(forKey: SyncConfig.DefaultsKey.scheduleHour) ?? 3
+        self.minutoPreferido = SettingsStore.integer(forKey: SyncConfig.DefaultsKey.scheduleMinute) ?? 0
+        self.somenteWifi = SettingsStore.bool(forKey: SyncConfig.DefaultsKey.scheduleWifiOnly) ?? true
 
-        if let dadosFiltro = defaults.data(forKey: SyncConfig.DefaultsKey.filtro),
+        if let dadosFiltro = SettingsStore.data(forKey: SyncConfig.DefaultsKey.filtro),
            let filtroSalvo = try? JSONDecoder().decode(SyncFiltro.self, from: dadosFiltro) {
             self.filtro = filtroSalvo
         } else {
             self.filtro = .semFiltro
         }
-        self.limiteItemBytesForaDoWifi = defaults.object(
-            forKey: SyncConfig.DefaultsKey.limiteItemBytesForaDoWifi
-        ) as? Int64
-        self.incluirCompartilhados = defaults.bool(forKey: SyncConfig.DefaultsKey.includeShared)
+        self.limiteItemBytesForaDoWifi = SettingsStore.int64(forKey: SyncConfig.DefaultsKey.limiteItemBytesForaDoWifi)
+        self.incluirCompartilhados = SettingsStore.bool(forKey: SyncConfig.DefaultsKey.includeShared) ?? false
     }
 
     /// Expõe o tracker/engine para reuso pelo ViewModel (fonte única de verdade).
@@ -413,7 +413,7 @@ final class BackgroundSyncManager {
 
         // Dispara o trabalho assíncrono. Guardamos a referência para poder cancelar
         // caso o sistema sinalize expiração do tempo disponível.
-        trabalho = Task { [engine, folderName, formato, somenteWifi, filtro, incluirCompartilhados, limiteItemBytesForaDoWifi, log] in
+        trabalho = Task { [engine, tracker, folderName, formato, somenteWifi, filtro, incluirCompartilhados, limiteItemBytesForaDoWifi, log] in
             // Determina o tipo de rede uma única vez — usado tanto para a
             // preferência "Somente Wi-Fi" quanto para o limite de tamanho
             // por item fora do Wi-Fi.
@@ -426,6 +426,16 @@ final class BackgroundSyncManager {
                 log.info("Backup em background pulado: preferência é Somente Wi-Fi e a rede atual não é Wi-Fi.")
                 task.setTaskCompleted(success: true)
                 return
+            }
+
+            // Auto-recuperação: se o iOS disparar esta tarefa ANTES do
+            // usuário abrir o app depois de uma reinstalação via sideload
+            // (livro-razão local vazio), tenta adotar o livro-razão salvo na
+            // pasta de destino antes de sincronizar — evita reenviar toda a
+            // galeria do zero. Best-effort (ver `SyncViewModel.refreshCounts`
+            // para o mesmo mecanismo no caminho em primeiro plano).
+            if await tracker.syncedCount == 0 {
+                _ = try? await engine.adotarLedgerDoDestino(folderName: folderName, tracker: tracker)
             }
 
             do {

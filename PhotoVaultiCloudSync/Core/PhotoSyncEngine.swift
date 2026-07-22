@@ -113,7 +113,7 @@ actor PhotoSyncEngine {
     /// - Returns: URL da pasta de destino pronta para gravação.
     /// - Throws: `SyncError.pastaExternaInacessivel` / `.containerNaoEncontrado` / `.escritaFalhou`.
     private func resolverPastaDestino(folderName: String) throws -> URL {
-        if let bookmarkData = UserDefaults.standard.data(forKey: SyncConfig.DefaultsKey.destinationBookmark) {
+        if let bookmarkData = SettingsStore.data(forKey: SyncConfig.DefaultsKey.destinationBookmark) {
             return try resolverPastaExterna(bookmarkData)
         }
         return try resolverPastaLocal(folderName: folderName)

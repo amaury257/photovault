@@ -14,9 +14,14 @@
 //    na cópia que está na pasta de backup.
 //  - Também evita duplicatas: antes de enviar, o motor pergunta `isSynced(_:)`.
 //
-//  Persistência: arquivo JSON em Application Support (escala melhor que UserDefaults
-//  para bibliotecas com dezenas de milhares de itens). Metadados escalares (data da
-//  última sync, nome da pasta) ficam em UserDefaults — ver SyncViewModel.
+//  Persistência: arquivo JSON em Application Support (escala melhor que
+//  UserDefaults/Keychain para bibliotecas com dezenas de milhares de itens).
+//  Preferências do usuário (pasta de destino, agendamento, filtro etc.) ficam
+//  no Keychain via `SettingsStore` — ver `SyncViewModel`. Diferente deste
+//  ledger, o Keychain sobrevive a reinstalações via sideload; por isso, ao
+//  reinstalar, `SyncViewModel.refreshCounts` tenta ADOTAR de volta uma cópia
+//  do ledger salva na própria pasta de destino (ver
+//  `PhotoSyncEngine.adotarLedgerDoDestino`) em vez de reconstruí-lo do zero.
 //
 
 import Foundation

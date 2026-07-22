@@ -114,10 +114,15 @@ final class SyncViewModel: ObservableObject {
         self.engine = engine ?? BackgroundSyncManager.shared.engineCompartilhado
         self.tracker = tracker ?? BackgroundSyncManager.shared.trackerCompartilhado
         self.defaults = defaults
-        self.folderName = defaults.string(forKey: SyncConfig.DefaultsKey.folderName)
+        // A partir daqui, as configurações do usuário vêm de `SettingsStore`
+        // (Keychain, sobrevive a reinstalações via sideload) — não mais de
+        // `UserDefaults` puro. Ver `SettingsStore` para a migração automática
+        // de valores legados. `lastSyncDate` continua em `UserDefaults`: é
+        // estado operacional, não preferência do usuário.
+        self.folderName = SettingsStore.string(forKey: SyncConfig.DefaultsKey.folderName)
             ?? SyncConfig.nomePastaPadrao
         // Carrega o formato de exportação persistido (ou o padrão).
-        self.exportFormat = defaults.string(forKey: SyncConfig.DefaultsKey.exportFormat)
+        self.exportFormat = SettingsStore.string(forKey: SyncConfig.DefaultsKey.exportFormat)
             .flatMap(ExportFormat.init(rawValue:)) ?? SyncConfig.formatoPadrao
         // Carrega a última data de sync persistida. Atribuição do VALOR INTEIRO
         // da struct (não `self.stats.ultimaSync = ...`): mutar só um sub-campo
@@ -130,7 +135,7 @@ final class SyncViewModel: ObservableObject {
         )
         // Resolve (melhor esforço, só para exibição) o nome da pasta externa
         // já escolhida em uma sessão anterior, se houver.
-        if let bookmarkData = defaults.data(forKey: SyncConfig.DefaultsKey.destinationBookmark) {
+        if let bookmarkData = SettingsStore.data(forKey: SyncConfig.DefaultsKey.destinationBookmark) {
             self.destinoExternoNome = SecurityScopedBookmark.nomeAmigavel(deBookmark: bookmarkData)
         } else {
             self.destinoExternoNome = nil
@@ -139,16 +144,16 @@ final class SyncViewModel: ObservableObject {
         // Agendamento automático: desabilitado por padrão (opt-in), horário
         // padrão 03:00, e só Wi-Fi por padrão (evita gastar dados móveis sem
         // o usuário ter escolhido isso explicitamente).
-        self.agendamentoHabilitado = defaults.bool(forKey: SyncConfig.DefaultsKey.scheduleEnabled)
-        let horaSalva = defaults.object(forKey: SyncConfig.DefaultsKey.scheduleHour) as? Int ?? 3
-        let minutoSalvo = defaults.object(forKey: SyncConfig.DefaultsKey.scheduleMinute) as? Int ?? 0
+        self.agendamentoHabilitado = SettingsStore.bool(forKey: SyncConfig.DefaultsKey.scheduleEnabled) ?? false
+        let horaSalva = SettingsStore.integer(forKey: SyncConfig.DefaultsKey.scheduleHour) ?? 3
+        let minutoSalvo = SettingsStore.integer(forKey: SyncConfig.DefaultsKey.scheduleMinute) ?? 0
         self.agendamentoHorario = Calendar.current.date(
             bySettingHour: horaSalva, minute: minutoSalvo, second: 0, of: Date()
         ) ?? Date()
-        self.agendamentoSomenteWifi = defaults.object(forKey: SyncConfig.DefaultsKey.scheduleWifiOnly) as? Bool ?? true
+        self.agendamentoSomenteWifi = SettingsStore.bool(forKey: SyncConfig.DefaultsKey.scheduleWifiOnly) ?? true
 
         // Filtro de conteúdo (álbuns/data mínima) — padrão: sem filtro.
-        if let dados = defaults.data(forKey: SyncConfig.DefaultsKey.filtro),
+        if let dados = SettingsStore.data(forKey: SyncConfig.DefaultsKey.filtro),
            let filtroSalvo = try? JSONDecoder().decode(SyncFiltro.self, from: dados) {
             self.filtro = filtroSalvo
         } else {
@@ -156,18 +161,17 @@ final class SyncViewModel: ObservableObject {
         }
 
         // Limite de tamanho por item fora do Wi-Fi — padrão: sem limite.
-        let limiteSalvo = defaults.object(forKey: SyncConfig.DefaultsKey.limiteItemBytesForaDoWifi) as? Int64
-        self.limiteItemBytesForaDoWifi = limiteSalvo
+        self.limiteItemBytesForaDoWifi = SettingsStore.int64(forKey: SyncConfig.DefaultsKey.limiteItemBytesForaDoWifi)
 
         // Escopo do backup: por padrão só a biblioteca do usuário (opt-in para
         // incluir os álbuns compartilhados).
-        self.incluirCompartilhados = defaults.bool(forKey: SyncConfig.DefaultsKey.includeShared)
+        self.incluirCompartilhados = SettingsStore.bool(forKey: SyncConfig.DefaultsKey.includeShared) ?? false
     }
 
     /// Persiste a preferência de incluir compartilhados e a propaga ao
     /// gerenciador de background. Chamado pela View via `.onChange`.
     func salvarIncluirCompartilhados() {
-        defaults.set(incluirCompartilhados, forKey: SyncConfig.DefaultsKey.includeShared)
+        SettingsStore.set(incluirCompartilhados, forKey: SyncConfig.DefaultsKey.includeShared)
         BackgroundSyncManager.shared.atualizarIncluirCompartilhados(incluirCompartilhados)
     }
 
@@ -180,10 +184,10 @@ final class SyncViewModel: ObservableObject {
         let hora = componentes.hour ?? 3
         let minuto = componentes.minute ?? 0
 
-        defaults.set(agendamentoHabilitado, forKey: SyncConfig.DefaultsKey.scheduleEnabled)
-        defaults.set(hora, forKey: SyncConfig.DefaultsKey.scheduleHour)
-        defaults.set(minuto, forKey: SyncConfig.DefaultsKey.scheduleMinute)
-        defaults.set(agendamentoSomenteWifi, forKey: SyncConfig.DefaultsKey.scheduleWifiOnly)
+        SettingsStore.set(agendamentoHabilitado, forKey: SyncConfig.DefaultsKey.scheduleEnabled)
+        SettingsStore.set(hora, forKey: SyncConfig.DefaultsKey.scheduleHour)
+        SettingsStore.set(minuto, forKey: SyncConfig.DefaultsKey.scheduleMinute)
+        SettingsStore.set(agendamentoSomenteWifi, forKey: SyncConfig.DefaultsKey.scheduleWifiOnly)
 
         BackgroundSyncManager.shared.atualizarAgendamento(
             habilitado: agendamentoHabilitado, hora: hora, minuto: minuto,
@@ -193,11 +197,32 @@ final class SyncViewModel: ObservableObject {
 
     // MARK: - Ações
 
+    /// Evita repetir a auto-adoção do livro-razão (ver `refreshCounts`) mais
+    /// de uma vez por sessão do app — não há necessidade de checar de novo a
+    /// cada chamada, e a pasta de destino já foi consultada uma vez.
+    private var tentouAdotarLedgerAutomaticamente = false
+
     /// Atualiza os contadores do dashboard (total na galeria + total já enviado).
     ///
     /// Requer permissão de fotos para contar a galeria; se ainda não houver
     /// autorização, mantém o total anterior sem lançar erro visível.
     func refreshCounts() async {
+        // Auto-recuperação (uma vez por sessão): se o livro-razão local está
+        // vazio, tenta adotar automaticamente o livro-razão salvo na pasta de
+        // destino atual (ver `adotarLedgerDoDestino`). Cobre o caso comum de
+        // reinstalação via sideload (AltStore/SideStore/iloader) que apaga a
+        // sandbox do app — a pasta de destino (ex.: iCloud Drive) e o backup
+        // nela continuam intactos, mas sem isto o app "esqueceria" o que já
+        // foi sincronizado e reenviaria tudo de novo. Best-effort: se não
+        // houver pasta configurada ainda, ou nenhum ledger salvo nela, não
+        // faz nada (`adotarLedgerDoDestino` já trata os dois casos como 0).
+        if !tentouAdotarLedgerAutomaticamente {
+            tentouAdotarLedgerAutomaticamente = true
+            if await tracker.syncedCount == 0 {
+                _ = try? await engine.adotarLedgerDoDestino(folderName: folderName, tracker: tracker)
+            }
+        }
+
         let jaEnviados = await tracker.syncedCount
         var novoStats = stats
         novoStats.totalBackupFeito = jaEnviados
@@ -295,7 +320,7 @@ final class SyncViewModel: ObservableObject {
         let limpo = novoNome.trimmingCharacters(in: .whitespacesAndNewlines)
         let valor = limpo.isEmpty ? SyncConfig.nomePastaPadrao : limpo
         folderName = valor
-        defaults.set(valor, forKey: SyncConfig.DefaultsKey.folderName)
+        SettingsStore.set(valor, forKey: SyncConfig.DefaultsKey.folderName)
         BackgroundSyncManager.shared.atualizarPasta(valor)
     }
 
@@ -305,7 +330,7 @@ final class SyncViewModel: ObservableObject {
     /// foram gravados (coerente com o backup unidirecional).
     func salvarExportFormat(_ novoFormato: ExportFormat) {
         exportFormat = novoFormato
-        defaults.set(novoFormato.rawValue, forKey: SyncConfig.DefaultsKey.exportFormat)
+        SettingsStore.set(novoFormato.rawValue, forKey: SyncConfig.DefaultsKey.exportFormat)
         BackgroundSyncManager.shared.atualizarFormato(novoFormato)
     }
 
@@ -326,7 +351,7 @@ final class SyncViewModel: ObservableObject {
     /// `PhotoSyncEngine.resolverPastaDestino`). Itens já enviados para a
     /// pasta anterior permanecem lá — só os próximos backups usam a nova pasta.
     func aplicarPastaDestinoExterna(bookmark: Data, nome: String) {
-        defaults.set(bookmark, forKey: SyncConfig.DefaultsKey.destinationBookmark)
+        SettingsStore.set(bookmark, forKey: SyncConfig.DefaultsKey.destinationBookmark)
         destinoExternoNome = nome
     }
 
@@ -342,7 +367,7 @@ final class SyncViewModel: ObservableObject {
     /// Remove a pasta externa escolhida, revertendo o backup para a pasta local
     /// padrão do app (`folderName`, dentro de Documents).
     func removerPastaDestinoExterna() {
-        defaults.removeObject(forKey: SyncConfig.DefaultsKey.destinationBookmark)
+        SettingsStore.removeObject(forKey: SyncConfig.DefaultsKey.destinationBookmark)
         destinoExternoNome = nil
     }
 
@@ -400,7 +425,7 @@ final class SyncViewModel: ObservableObject {
     func salvarFiltro(_ novoFiltro: SyncFiltro) {
         filtro = novoFiltro
         if let dados = try? JSONEncoder().encode(novoFiltro) {
-            defaults.set(dados, forKey: SyncConfig.DefaultsKey.filtro)
+            SettingsStore.set(dados, forKey: SyncConfig.DefaultsKey.filtro)
         }
         BackgroundSyncManager.shared.atualizarFiltro(novoFiltro)
         Task { await refreshCounts() }
@@ -411,9 +436,9 @@ final class SyncViewModel: ObservableObject {
     func salvarLimiteItemForaDoWifi(_ novoLimite: Int64?) {
         limiteItemBytesForaDoWifi = novoLimite
         if let novoLimite {
-            defaults.set(novoLimite, forKey: SyncConfig.DefaultsKey.limiteItemBytesForaDoWifi)
+            SettingsStore.set(novoLimite, forKey: SyncConfig.DefaultsKey.limiteItemBytesForaDoWifi)
         } else {
-            defaults.removeObject(forKey: SyncConfig.DefaultsKey.limiteItemBytesForaDoWifi)
+            SettingsStore.removeObject(forKey: SyncConfig.DefaultsKey.limiteItemBytesForaDoWifi)
         }
         BackgroundSyncManager.shared.atualizarLimiteItemForaDoWifi(novoLimite)
     }
