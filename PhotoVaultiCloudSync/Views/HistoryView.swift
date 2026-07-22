@@ -24,7 +24,15 @@ struct HistoryView: View {
                 ContentUnavailableViewCompat()
             } else {
                 List(entradas) { entrada in
-                    linha(entrada)
+                    if entrada.tipo == .fotos {
+                        NavigationLink {
+                            HistoryDetailView(entrada: entrada)
+                        } label: {
+                            linha(entrada)
+                        }
+                    } else {
+                        linha(entrada)
+                    }
                 }
             }
         }

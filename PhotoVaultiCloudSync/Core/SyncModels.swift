@@ -181,10 +181,16 @@ struct HistoricoEntry: Identifiable, Equatable {
     /// individuais, que já é refletida em `falhas`.
     var erroGeral: String?
     var origem: Origem
+    /// Caminhos relativos (à pasta de destino) dos arquivos efetivamente
+    /// copiados NESTA execução — usado pela tela de detalhe do histórico para
+    /// exibir as miniaturas das fotos/vídeos deste backup. Vazio em entradas
+    /// persistidas antes desta funcionalidade existir, ou quando não houve
+    /// nada para copiar (0 enviados / falha geral).
+    var caminhosRelativos: [String]
 
     init(
         id: UUID = UUID(), tipo: Tipo, data: Date, enviados: Int, falhas: Int,
-        erroGeral: String? = nil, origem: Origem = .manual
+        erroGeral: String? = nil, origem: Origem = .manual, caminhosRelativos: [String] = []
     ) {
         self.id = id
         self.tipo = tipo
@@ -193,6 +199,7 @@ struct HistoricoEntry: Identifiable, Equatable {
         self.falhas = falhas
         self.erroGeral = erroGeral
         self.origem = origem
+        self.caminhosRelativos = caminhosRelativos
     }
 }
 
@@ -201,10 +208,11 @@ struct HistoricoEntry: Identifiable, Equatable {
 // automática, uma entrada antiga sem essa chave faria o decode do ARRAY
 // INTEIRO falhar (`SyncHistoryStore` usa `try?` na lista completa),
 // apagando silenciosamente todo o histórico. `decodeIfPresent` com fallback
-// para `.manual` preserva a compatibilidade.
+// para `.manual` preserva a compatibilidade. `caminhosRelativos` segue o
+// mesmo cuidado.
 extension HistoricoEntry: Codable {
     private enum CodingKeys: String, CodingKey {
-        case id, tipo, data, enviados, falhas, erroGeral, origem
+        case id, tipo, data, enviados, falhas, erroGeral, origem, caminhosRelativos
     }
 
     init(from decoder: Decoder) throws {
@@ -216,6 +224,7 @@ extension HistoricoEntry: Codable {
         falhas = try c.decode(Int.self, forKey: .falhas)
         erroGeral = try c.decodeIfPresent(String.self, forKey: .erroGeral)
         origem = try c.decodeIfPresent(Origem.self, forKey: .origem) ?? .manual
+        caminhosRelativos = try c.decodeIfPresent([String].self, forKey: .caminhosRelativos) ?? []
     }
 
     func encode(to encoder: Encoder) throws {
@@ -227,6 +236,7 @@ extension HistoricoEntry: Codable {
         try c.encode(falhas, forKey: .falhas)
         try c.encodeIfPresent(erroGeral, forKey: .erroGeral)
         try c.encode(origem, forKey: .origem)
+        try c.encode(caminhosRelativos, forKey: .caminhosRelativos)
     }
 }
 

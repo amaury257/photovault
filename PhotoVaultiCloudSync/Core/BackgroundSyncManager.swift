@@ -459,7 +459,7 @@ final class BackgroundSyncManager {
                 await SyncHistoryStore.shared.registrar(HistoricoEntry(
                     tipo: .fotos, data: Date(),
                     enviados: resultado.enviados, falhas: resultado.falhas,
-                    origem: .automatico
+                    origem: .automatico, caminhosRelativos: resultado.caminhosRelativosCopiados
                 ))
                 await NotificationManager.shared.notificarConclusao(tipo: .fotos, resultado: resultado)
                 task.setTaskCompleted(success: true)

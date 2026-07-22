@@ -166,6 +166,14 @@ actor PhotoSyncEngine {
 
     // MARK: - Informações de armazenamento
 
+    /// Resolve a pasta de destino atual para LEITURA (ex.: gerar miniaturas
+    /// dos arquivos de uma execução passada na tela de detalhe do histórico).
+    /// Mesma resolução usada para gravar (bookmark externo ou pasta local).
+    /// - Throws: `SyncError` se a pasta não puder ser resolvida/acessada.
+    func pastaDestinoParaLeitura(folderName: String) throws -> URL {
+        try resolverPastaDestino(folderName: folderName)
+    }
+
     /// Espaço livre (em bytes) no volume da pasta de destino atual.
     /// - Throws: `SyncError` se a pasta não puder ser resolvida/acessada.
     func espacoLivreDestino(folderName: String) throws -> Int64 {

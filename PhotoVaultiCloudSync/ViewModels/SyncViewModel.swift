@@ -264,7 +264,8 @@ final class SyncViewModel: ObservableObject {
 
             await SyncHistoryStore.shared.registrar(HistoricoEntry(
                 tipo: .fotos, data: agora,
-                enviados: resultado.enviados, falhas: resultado.falhas
+                enviados: resultado.enviados, falhas: resultado.falhas,
+                caminhosRelativos: resultado.caminhosRelativosCopiados
             ))
             await NotificationManager.shared.notificarConclusao(tipo: .fotos, resultado: resultado)
 
