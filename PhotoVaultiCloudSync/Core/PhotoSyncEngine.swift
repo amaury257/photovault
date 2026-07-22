@@ -625,13 +625,17 @@ actor PhotoSyncEngine {
 
     // MARK: - Modo ORIGINAL (dados brutos)
 
-    /// Exporta TODOS os recursos originais de um asset para a pasta de destino.
+    /// Exporta os recursos ORIGINAIS (sem edição) de um asset para a pasta de destino.
     ///
     /// Um único asset pode ter vários `PHAssetResource`:
     ///   - foto original (.photo) + eventual RAW pareado (.alternatePhoto);
     ///   - vídeo original (.video);
     ///   - o vídeo de um Live Photo (.pairedVideo).
-    /// Exportamos todos para um backup "original completo".
+    /// Fotos/vídeos editados no app Fotos também expõem `.fullSizePhoto`/
+    /// `.fullSizeVideo` (a versão renderizada com os ajustes aplicados) —
+    /// esses são IGNORADOS de propósito (ver `deveExportar`): o backup no
+    /// modo "Original" guarda sempre o arquivo bruto sem edição, nunca as
+    /// duas versões do mesmo asset.
     @discardableResult
     private func exportarRecursosOriginais(_ asset: PHAsset, para destino: URL) async throws -> [String] {
         let recursos = PHAssetResource.assetResources(for: asset)
@@ -686,10 +690,14 @@ actor PhotoSyncEngine {
     /// Decide quais tipos de recurso entram no backup "original completo".
     private static func deveExportar(_ tipo: PHAssetResourceType) -> Bool {
         switch tipo {
-        case .photo, .video, .pairedVideo, .fullSizePhoto, .fullSizeVideo, .alternatePhoto:
+        case .photo, .video, .pairedVideo, .alternatePhoto:
             return true
         default:
-            // Ignora recursos auxiliares (ex.: ajustes/adjustmentData).
+            // Ignora recursos auxiliares (ex.: ajustes/adjustmentData) e as
+            // versões RENDERIZADAS de edição (.fullSizePhoto/.fullSizeVideo)
+            // — de propósito: exportá-las junto do .photo/.video original
+            // duplicava a mesma foto/vídeo no backup (mesmo asset, dois
+            // arquivos, ex. "IMG_1482.JPG" + "FullSizeRender.jpeg").
             return false
         }
     }
