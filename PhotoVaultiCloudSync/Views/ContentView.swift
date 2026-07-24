@@ -43,6 +43,7 @@ struct ContentView: View {
                         bannerEscolhaPasta
                     }
                     grupoContadores
+                    notaBibliotecaCompartilhada
                     botaoSincronizar
                     linkBackupWhatsApp
                     linkHistorico
@@ -275,6 +276,22 @@ struct ContentView: View {
             )
         }
         .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    /// Explica por que "Fotos e vídeos na galeria" pode não bater com o
+    /// número exibido na Fototeca do app Fotos: com a Biblioteca Compartilhada
+    /// do iCloud ativa, o iOS trata as mídias de TODOS os participantes como
+    /// parte da "sua" biblioteca (não existe uma forma pública de distinguir
+    /// quem contribuiu cada item), enquanto a Fototeca pode estar mostrando só
+    /// "Somente eu". O backup em si sempre cobre tudo que o iOS expõe aqui —
+    /// nada fica de fora por causa dessa diferença de exibição.
+    private var notaBibliotecaCompartilhada: some View {
+        Text("\"Fotos e vídeos na galeria\" inclui a Biblioteca Compartilhada do iCloud, se você "
+            + "tiver uma ativa — por isso pode não bater com a Fototeca do app Fotos em \"Somente eu\".")
+            .font(.caption2)
+            .foregroundStyle(.tertiary)
+            .multilineTextAlignment(.center)
+            .padding(.horizontal, 8)
     }
 
     private func linhaContador(icone: String, titulo: String, valor: String) -> some View {
